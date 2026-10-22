@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-21T19:30:44Z",
+  "tagline": "Chilled freelance hauling on interstellar highways. Pick a speed, follow the sat-nav, and keep the fuel topped up.",
+  "description": "**Space Trucker** is a relaxed top-down driving game set on starlit space highways. You start your shift as a rookie hauler with \u00a2250 in your account and zero deliveries. Dock at a station to pick up a job, then take the road toward destinations like Jove Gasport, signed along routes such as the M1 East.\n\nDriving is kept simple. Choose a cruise speed from 1 to 5 by clicking the on-screen buttons or pressing the number keys. Press B to brake at red lights, and your rig resumes on green. Use A and D, or the arrow buttons, to change lanes and move into exit lanes when it is time to leave. Roadside speed limit signs show how fast each stretch allows.\n\nA circular sat-nav in the corner shows your next exit and the lane you need to be in, so you always know where to go. A fuel gauge keeps track of your tank, and your earnings and delivery count are always visible.\n\nThere are no crashes and no fail state, just the open road. Police fines and fuel are the only things that keep you honest. A music toggle is included, so you can sit back and enjoy the haul.",
+  "theme": {
+    "color_theme": "midnight",
+    "font_family": "modern",
+    "border_radius": "medium"
+  },
+  "category_slug": "driving",
+  "tag_slugs": [
+    "space",
+    "driving",
+    "relaxing",
+    "delivery",
+    "trucking",
+    "simulation"
+  ]
+}

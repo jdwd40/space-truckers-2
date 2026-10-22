@@ -1,0 +1,101 @@
+{
+  "status": "complete",
+  "started_at": "2026-10-21T19:30:22Z",
+  "poster": {
+    "frames": [
+      "t=3.4s",
+      "t=6.0s",
+      "t=8.4s"
+    ],
+    "errors": [],
+    "raf_per_second": 41,
+    "viewport": "1280x720",
+    "picked": {
+      "frame": "t=6.0s",
+      "detail": 35.6
+    },
+    "files": {
+      "title_poster.webp": "/var/games/game-20261021-487c75b1/assets/ui/title_poster.webp",
+      "title_poster_sm.webp": "/var/games/game-20261021-487c75b1/assets/ui/title_poster_sm.webp"
+    }
+  },
+  "metadata": {
+    "tagline": "Chilled freelance hauling on interstellar highways. Pick a speed, follow the sat-nav, and keep the fuel topped up.",
+    "description": "**Space Trucker** is a relaxed top-down driving game set on starlit space highways. You start your shift as a rookie hauler with \u00a2250 in your account and zero deliveries. Dock at a station to pick up a job, then take the road toward destinations like Jove Gasport, signed along routes such as the M1 East.\n\nDriving is kept simple. Choose a cruise speed from 1 to 5 by clicking the on-screen buttons or pressing the number keys. Press B to brake at red lights, and your rig resumes on green. Use A and D, or the arrow buttons, to change lanes and move into exit lanes when it is time to leave. Roadside speed limit signs show how fast each stretch allows.\n\nA circular sat-nav in the corner shows your next exit and the lane you need to be in, so you always know where to go. A fuel gauge keeps track of your tank, and your earnings and delivery count are always visible.\n\nThere are no crashes and no fail state, just the open road. Police fines and fuel are the only things that keep you honest. A music toggle is included, so you can sit back and enjoy the haul.",
+    "color_theme": "midnight",
+    "font_family": "modern",
+    "border_radius": "medium",
+    "category_slug": "driving",
+    "tag_slugs": [
+      "space",
+      "driving",
+      "relaxing",
+      "delivery",
+      "trucking",
+      "simulation"
+    ],
+    "kit": {
+      "theme": "starlit interstellar highways above a planet",
+      "genre": "relaxing driving and delivery sim",
+      "style": "modern",
+      "mood": "chilled",
+      "elements": [
+        "cargo hauler rig",
+        "rotating sat-nav",
+        "highway exit signs",
+        "speed limit signs",
+        "fuel gauge"
+      ]
+    },
+    "title": "Space Trucker",
+    "from_model": true
+  },
+  "model": {
+    "model": "@preset/tesana-opus-5-5",
+    "url": "http://127.0.0.1:8790/model/openrouter~claude-opus-5.5/v1/messages",
+    "ok": true,
+    "status": 200,
+    "seconds": 11.5,
+    "input_tokens": 3003,
+    "output_tokens": 969
+  },
+  "kit": {
+    "status": "complete",
+    "pid": 64789,
+    "items": [
+      "cover",
+      "banner",
+      "app_icon"
+    ],
+    "waited_out": false,
+    "results": [
+      {
+        "type": "cover",
+        "success": true,
+        "path": "/var/games/game-20261021-487c75b1/assets/ui/cover.webp",
+        "smallPath": "/var/games/game-20261021-487c75b1/assets/ui/cover_sm.webp"
+      },
+      {
+        "type": "banner",
+        "success": true,
+        "path": "/var/games/game-20261021-487c75b1/assets/ui/banner.webp"
+      },
+      {
+        "type": "app_icon",
+        "success": true,
+        "path": "/var/games/game-20261021-487c75b1/assets/ui/app_icon.webp"
+      }
+    ],
+    "files": [
+      "app_icon.webp",
+      "banner.webp",
+      "cover.webp",
+      "cover_sm.webp",
+      "explore_frame.webp",
+      "explore_frame_sm.webp",
+      "title_poster.webp",
+      "title_poster_sm.webp"
+    ]
+  },
+  "seconds": 40.0
+}

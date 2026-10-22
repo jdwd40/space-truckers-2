@@ -1,0 +1,26 @@
+{
+  "status": "complete",
+  "started_at": "2026-10-21T19:30:44.320Z",
+  "pid": 64789,
+  "items": [
+    {
+      "type": "cover",
+      "success": true,
+      "path": "/var/games/game-20261021-487c75b1/assets/ui/cover.webp",
+      "smallPath": "/var/games/game-20261021-487c75b1/assets/ui/cover_sm.webp"
+    },
+    {
+      "type": "banner",
+      "success": true,
+      "path": "/var/games/game-20261021-487c75b1/assets/ui/banner.webp"
+    },
+    {
+      "type": "app_icon",
+      "success": true,
+      "path": "/var/games/game-20261021-487c75b1/assets/ui/app_icon.webp"
+    }
+  ],
+  "dispatched_at": "2026-10-21T19:30:44Z",
+  "dispatched_by": "storefront_pass",
+  "updated_at": "2026-10-21T19:31:00.180Z"
+}

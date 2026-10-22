@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Space Trucker</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #070b1c; touch-action: none; }
+  #game { position: fixed; inset: 0; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<script data-tesana-bootstrap type="application/json" id="tesana-bootstrap-data">{"gameId": "d11fbc97-9e4c-4d96-bae2-c23d46a69d3c", "endpoint": "https://d3cbjx3gy93tul.cloudfront.net"}</script>
+<script data-tesana-bootstrap>
+  // Set the bootstrap BEFORE the SDK loads: its init() reads this
+  // synchronously. Reversing these two tags silently forces the SDK
+  // into its offline path.
+  (function () {
+    try {
+      var d = document.getElementById('tesana-bootstrap-data');
+      var cfg = d ? JSON.parse(d.textContent || '{}') : {};
+      window.__TESANA__ = Object.assign({}, window.__TESANA__ || {}, cfg);
+    } catch (e) { /* malformed bootstrap: the SDK's own offline path takes over */ }
+  })();
+</script>
+<script data-tesana-bootstrap src="https://unpkg.com/@tesana/sdk@1.2.0/dist/tesana.iife.js"></script>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
