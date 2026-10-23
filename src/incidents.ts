@@ -5,6 +5,9 @@ import { clamp, pick, rand } from './geom';
 import { SPEEDS, bumperCrashAt, bumperFee, bumperRepair } from './state';
 
 export interface Block { lane: number; s0: number; s1: number; inc: Incident }
+/** how far ahead of the wreck's nose the last crew vehicle (the repair truck) parks */
+const CREW_AHEAD = 24 + 28 + 24 + 34;
+
 export interface Incident {
   id: number; kind: 'breakdown' | 'accident'; seg: Seg;
   cas: Veh[]; lanes: number[]; shoulder: boolean;
@@ -49,6 +52,8 @@ export class Incidents {
     } else if (inc.phase === 'wait') {
       if (!inc.police && inc.t >= inc.policeAt) this.dispatch(inc, 'police');
       if (!inc.tow && inc.t >= inc.towAt) this.dispatch(inc, 'tow');
+      const l0 = inc.lanes[0];
+      for (const r of [inc.police, inc.tow]) if (r && !r.dead && r.lane !== l0 && r.pend === null && r.s - r.totLen > inc.front + 6) this.tr.ask(r, l0, true);
       const here = (r: Veh | null) => !!r && !r.dead && r.v < 3 && r.stopAt !== null && r.stopAt - r.s < 40;
       if (here(inc.police)) inc.policeHere = true;
       if (here(inc.tow)) inc.towHere = true;
@@ -77,7 +82,8 @@ export class Incidents {
     if (front === -Infinity) { inc.done = true; return; }
     inc.front = front; inc.rear = rear;
     inc.lanes = [...lanes].sort((a, b) => a - b);
-    const s0 = Math.max(40, rear - 430), s1 = front + 70;
+    // the closure runs on past the wreck: police and the repair truck park in front of it, where the player can see them
+    const s0 = Math.max(40, rear - 430), s1 = front + CREW_AHEAD + 60;
     for (const l of inc.lanes) { const b: Block = { lane: l, s0, s1, inc }; seg.blocks.push(b); inc.blocks.push(b); }
     inc.phase = 'wait'; inc.t = 0;
     inc.policeAt = inc.withPlayer ? rand(8, 11) : rand(9, 14);
@@ -86,8 +92,9 @@ export class Incidents {
 
   private dispatch(inc: Incident, type: 'police' | 'tow') {
     const seg = inc.seg;
-    const lane = inc.lanes[0];
-    const stopAt = type === 'police' ? inc.rear - 24 : inc.rear - 24 - 28 - 34;
+    const lane = this.openLane(inc);
+    // park nose-to-tail in front of the casualties: police first, repair truck beyond it
+    const stopAt = inc.front + (type === 'police' ? 24 + 28 : CREW_AHEAD);
     const vw = this.tr.view;
     let s = Math.max(120, inc.rear - 3300);
     for (let i = 0; i < 7; i++) {
@@ -352,8 +359,8 @@ export class Incidents {
       }
       // officer waving traffic past
       if (inc.policeHere && inc.phase !== 'clear') {
-        const so = inc.blocks[0].s0 + 100;
-        const o = seg.path.at(so, seg.laneLat(l0) + dir * 5);
+        const so = inc.front + 12;
+        const o = seg.path.at(so, seg.laneLat(l0) + dir * 9);
         const lat = { x: -Math.sin(o.h) * dir, y: Math.cos(o.h) * dir };
         const al = { x: Math.cos(o.h), y: Math.sin(o.h) };
         const sw = Math.sin(time * 5);
@@ -370,7 +377,7 @@ export class Incidents {
       if (inc.phase === 'repair' && inc.towHere) {
         const v = inc.cas.find((c) => !c.dead);
         if (v) {
-          const q = seg.path.at(v.s - v.totLen + 2, seg.laneLat(l0) - dir * 14);
+          const q = seg.path.at(v.s + 4, seg.laneLat(l0) - dir * 14);
           g.fillStyle(0xffb020, 1); g.fillCircle(q.x, q.y, 4.5); g.fillStyle(0xf2c9a0, 1); g.fillCircle(q.x, q.y, 2.3);
           for (let k = 0; k < 4; k++) { fx.fillStyle(0xbff4ff, 0.8); fx.fillCircle(q.x + rand(-9, 9), q.y + rand(-9, 9), rand(0.8, 2.2)); }
           fx.fillStyle(0x7fdcff, 0.35 + 0.2 * Math.sin(time * 30)); fx.fillCircle(q.x, q.y, 9);

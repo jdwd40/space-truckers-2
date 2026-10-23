@@ -204,7 +204,7 @@ export class Network {
   private laybyAt(seg: Seg, s0: number) {
     if (s0 < 900 || s0 + 540 > seg.len - 900) return;
     // keep clear of exits, merges and other lay-bys on the same side
-    if (seg.aux.some((a) => a.side === 1 && a.type !== 'merge' && s0 < a.s1 + 150 && s0 + 540 > a.s0 - 150)) return;
+    if (seg.aux.some((a) => a.side === 1 && s0 < a.s1 + 70 && s0 + 540 > a.s0 - 70)) return;
     const aux: Aux = { side: 1, s0, s1: s0 + 540, type: 'layby', slots: [] };
     for (let i = 0; i < 3; i++) aux.slots!.push({ s: s0 + 130 + i * 78, occ: null });
     seg.aux.push(aux);
@@ -368,8 +368,8 @@ export class Network {
       this.servicesAt(rd.f, q(0.45), pumps[0], names[0]);
       this.laybyAt(rd.r, q(0.12));
       this.laybyAt(rd.r, q(0.32));
-      this.laybyAt(rd.r, q(0.7));
       this.servicesAt(rd.r, q(0.6), pumps[1], names[1]);
+      this.laybyAt(rd.r, q(0.75));
       for (const [seg, f] of [[rd.f, 0.62], [rd.r, 0.5]] as [Seg, number][]) {
         const s = q(f);
         const p = seg.path.at(s, seg.laneLat(seg.lanes) + 60);
