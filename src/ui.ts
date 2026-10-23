@@ -52,6 +52,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   private onKey(e: KeyboardEvent) {
+    if (e.key === 'Escape' || e.key.toLowerCase() === 'p') { this.togglePause(); return; }
     if (this.modal) {
       if ((e.key === 'Enter' || e.key === ' ') && G.mode === 'title') this.startGame();
       return;
@@ -66,6 +67,22 @@ export class UIScene extends Phaser.Scene {
     else if (k === 'm') this.toggleMute();
   }
   private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; }
+  // ------------------------------------------------------------------ pause
+  /** freeze gameplay (the world scene skips its update while G.paused) and show the pause menu; call again to resume */
+  togglePause() {
+    if (G.paused) { G.paused = false; this.closeModal(); sfx.click(); return; }
+    if (G.mode !== 'drive' || this.modal) return; // nothing to pause on the title, job board or garage
+    G.paused = true; sfx.click();
+    const W = this.scale.width, H = this.scale.height, u = this.u;
+    const c = this.dim();
+    const t1 = this.txt(W / 2, H * 0.36, 'PAUSED', 64, '#ffffff', true, [0.5, 0.5]);
+    t1.setStroke('#1c2a52', 10 * u).setShadow(0, 6 * u, '#000000', 12 * u, true, true);
+    c.add(t1);
+    c.add(this.txt(W / 2, H * 0.36 + 54 * u, 'Traffic, fuel, timers and rescue crews are all on hold.', 18, '#9fe9ff', false, [0.5, 0.5]));
+    const b = this.btn(W / 2, H * 0.36 + 130 * u, 280 * u, 62 * u, 'Resume', 24, () => this.togglePause(), 0x1f8a5a, 0x7ff0c0);
+    c.add(b.c);
+    c.add(this.txt(W / 2, H * 0.36 + 190 * u, 'Esc or P to resume', 15, '#8fa6d8', false, [0.5, 0.5]));
+  }
 
   // ------------------------------------------------------------------ helpers
   private txt(x: number, y: number, s: string, size: number, color = '#ffffff', bold = true, origin: [number, number] = [0, 0]) {
@@ -119,6 +136,7 @@ export class UIScene extends Phaser.Scene {
     this.fuelBar = this.add.graphics(); R.add(this.fuelBar);
     this.fuelT = this.txt(W - 26 * u, 22 * u, '', 13, '#bcd2ff', true, [1, 0]); R.add(this.fuelT);
     this.muteBtn = this.btn(W - 300 * u, 43 * u, 52 * u, 52 * u, '♪', 22, () => this.toggleMute()); R.add(this.muteBtn.c);
+    const pb = this.btn(W - 360 * u, 43 * u, 52 * u, 52 * u, 'II', 20, () => this.togglePause()); R.add(pb.c);
     // speed bar
     const by = H - 52 * u;
     const bw = 62 * u, bh = 58 * u, gap = 8 * u;

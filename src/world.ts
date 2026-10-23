@@ -43,6 +43,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   stars!: Phaser.GameObjects.TileSprite;
   rocks: Phaser.GameObjects.Image[] = [];
   paxG = new Map<Layby, Phaser.GameObjects.Graphics>();
+  /** gameplay-clock timers: they only tick while the game is not paused */
+  pending: { t: number; fn: () => void }[] = [];
   flyers: Flyer[] = [];
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
   dockS = new Map<Seg, number>();
@@ -603,13 +605,13 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.refreshPlayerVis();
       toast(`Loaded ${job.cargo}! Now deliver to ${this.net.byId[job.to].name}`, '#7ff0c0', 4500);
       sfx.coin();
-      setTimeout(() => this.depart(st, job.to, true), 1800);
+      this.after(1.8, () => this.depart(st, job.to, true));
       return;
     }
     if (job) {
       const tgt = job.stage === 'pickup' ? job.from : job.to;
       toast(`Passing through ${st.name} — on to ${this.net.byId[tgt].name}`, '#9fe9ff', 3500);
-      setTimeout(() => this.depart(st, tgt, true), 1500);
+      this.after(1.5, () => this.depart(st, tgt, true));
       return;
     }
     G.mode = 'board';
@@ -669,8 +671,15 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
 
   // ----------------------------------------------------------- main loop
+  /** run fn after sec seconds of gameplay time (frozen while paused, unlike setTimeout) */
+  after(sec: number, fn: () => void) { this.pending.push({ t: sec, fn }); }
+
   override update(_t: number, dms: number) {
+    if (G.paused) return;
     const dt = Math.min(0.05, dms / 1000);
+    for (const q of this.pending) q.t -= dt;
+    const due = this.pending.filter((q) => q.t <= 0);
+    if (due.length) { this.pending = this.pending.filter((q) => q.t > 0); for (const q of due) q.fn(); }
     this.clk += dt;
     this.blink += dt;
     const p = this.player;

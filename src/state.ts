@@ -70,6 +70,8 @@ export const G = {
   /** passengers aboard this trip, picked up at lay-bys; paid out at the next station docked */
   pax: 0,
   paxFrom: '' as string,
+  /** gameplay frozen by the pause menu; the UI scene keeps running */
+  paused: false,
 };
 
 export function rankOf(earned: number): number {
