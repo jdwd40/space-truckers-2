@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Network, Seg, Trans, Services, Station, Stop, LW, Route } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
-import { Cullable, DEPTH, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex } from './render';
+import { Cullable, DEPTH, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
 import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel } from './state';
 import { sfx } from './audio';
@@ -166,6 +166,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     for (let i = 0; i < 260; i++) { const p = ore.at(rand(0, ore.len)); const side = Math.random() < 0.5 ? -1 : 1; const d = rand(350, 2200) * side; addRock(p.x - Math.sin(p.h) * d, p.y + Math.cos(p.h) * d, rand(0.5, 2.2)); }
     for (let i = 0; i < 120; i++) addRock(rand(-20000, 20000), rand(-18000, 18000), rand(0.5, 1.6));
     // roadside decor: satellites, buoys, little garden platforms, parked freighters
+    const placed: { x: number; y: number; r: number }[] = [];
     const kinds = ['d_sat', 'd_buoy', 'd_dome', 'd_freighter', 'd_garden', 'd_buoy'];
     for (const rd of this.net.roads) {
       for (let s = 400; s < rd.c.len; s += rand(500, 1100)) {
@@ -177,6 +178,42 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         const im = this.add.image(x, y, k).setRotation(rand(0, 6)).setDepth(3).setScale(k === 'd_freighter' ? rand(0.9, 1.4) : rand(0.6, 1.1));
         (im as any).spin = k === 'd_sat' || k === 'd_buoy' ? rand(-0.15, 0.15) : 0;
         this.layer.add(im); this.rocks.push(im);
+        placed.push({ x, y, r: 90 });
+      }
+    }
+    // roadside structures: mining stations, ship repair shops and living quarters.
+    // Placed well clear of the carriageway (signs sit within ~200 px of the centreline, gantries ~520) and
+    // spaced apart so the roadside stays readable and does not feel repetitive.
+    const clear = (x: number, y: number, half: number) => {
+      for (const o of placed) if (Math.hypot(o.x - x, o.y - y) < o.r + half + 260) return false;
+      for (const [ox, oy] of [[0, 0], [-half, -half], [half, -half], [-half, half], [half, half]]) if (!free(x + ox, y + oy)) return false;
+      return true;
+    };
+    const industrial = new Set(['Ore Road', 'Slag Highway', 'Cinder Road', 'Ice Road']);
+    const quiet = new Set(['Aurora Way', 'Frost Line', 'Harbor Run']);
+    for (const rd of this.net.roads) {
+      // weight the mix by road character: mining belts along the outer ore/slag roads, homes near the hubs
+      const w = industrial.has(rd.name) ? { mine: 0.55, repair: 0.25, hab: 0.2 } : quiet.has(rd.name) ? { mine: 0.2, repair: 0.25, hab: 0.55 } : { mine: 0.3, repair: 0.35, hab: 0.35 };
+      let last = '';
+      for (let s = 900; s < rd.c.len - 600; s += rand(1500, 3200)) {
+        const q = rd.c.at(s);
+        const side = Math.random() < 0.5 ? -1 : 1, d = rand(620, 1150) * side;
+        const x = q.x - Math.sin(q.h) * d, y = q.y + Math.cos(q.h) * d;
+        let kind = Math.random() < w.mine ? 'mine' : Math.random() < w.repair / (w.repair + w.hab) ? 'repair' : 'hab';
+        if (kind === last && Math.random() < 0.7) kind = kind === 'hab' ? 'repair' : 'hab';
+        const half = (STRUCT_SIZE[kind] / 2) * 1.1;
+        if (!clear(x, y, half)) continue;
+        const key = 'st_' + kind + Math.floor(Math.random() * STRUCT_VARIANTS);
+        // face the road, with a little jitter so rows never line up perfectly
+        const rot = q.h + (side > 0 ? -Math.PI / 2 : Math.PI / 2) + rand(-0.35, 0.35) + (Math.random() < 0.25 ? Math.PI : 0);
+        const im = this.add.image(x, y, key).setRotation(rot).setDepth(3.2).setScale(rand(0.85, 1.15));
+        (im as any).spin = 0;
+        this.layer.add(im); this.rocks.push(im);
+        placed.push({ x, y, r: half });
+        last = kind;
+        // mining stations sometimes get a scatter of spoil rocks and a second outbuilding
+        if (kind === 'mine' && Math.random() < 0.6) for (let i = 0; i < 5; i++) { const a = rand(0, Math.PI * 2), r = rand(half + 40, half + 220); addRock(x + Math.cos(a) * r, y + Math.sin(a) * r, rand(0.4, 1)); }
+        if (kind === 'hab' && Math.random() < 0.4) { const a = rot + rand(-0.6, 0.6), r = half + 150; const gx = x + Math.cos(a) * r, gy = y + Math.sin(a) * r; if (free(gx, gy)) { const gi = this.add.image(gx, gy, 'd_garden').setRotation(rand(0, 6)).setDepth(3).setScale(0.7); (gi as any).spin = 0; this.layer.add(gi); this.rocks.push(gi); } }
       }
     }
     // ambient flyers off the highway

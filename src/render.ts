@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { Network, Seg, LW, Sign, SignPanel, Station } from './network';
-import { Pt, rand } from './geom';
+import { Pt, rand, clamp as clampV } from './geom';
 
 export interface Cullable { obj: Phaser.GameObjects.GameObject & { setVisible(v: boolean): unknown }; x0: number; y0: number; x1: number; y1: number }
 
@@ -131,6 +131,7 @@ export function makeTextures(scene: Phaser.Scene) {
   makeStars(scene);
   makeNebula(scene);
   makeDecor(scene);
+  makeStructures(scene);
   makeAsteroids(scene);
 }
 
@@ -233,6 +234,114 @@ function makeDecor(scene: Phaser.Scene) {
   for (let i = 0; i < 10; i++) { const x = 90 + rand(-50, 50), y = 90 + rand(-50, 50); g.fillStyle(0x1f5f33, 1); g.fillCircle(x + 3, y + 4, 12); g.fillStyle(0x3caa55, 1); g.fillCircle(x, y, 11); g.fillStyle(0x6fd17a, 1); g.fillCircle(x - 3, y - 3, 4); }
   g.lineStyle(4, 0x5ad8ff, 0.8); g.strokeCircle(90, 90, 86);
   g.generateTexture('d_garden', 180, 180); g.destroy();
+}
+// roadside structures: mining stations, ship repair shops and living quarters.
+// Each kind has STRUCT_VARIANTS procedurally varied layouts so the roadside never repeats exactly.
+export const STRUCT_VARIANTS = 3;
+export const STRUCT_SIZE: Record<string, number> = { mine: 320, repair: 300, hab: 300 };
+function makeStructures(scene: Phaser.Scene) {
+  const shadow = (g: Phaser.GameObjects.Graphics, fn: () => void) => { g.fillStyle(0x000000, 0.3); fn(); };
+  const pad = (g: Phaser.GameObjects.Graphics, cx: number, cy: number, w: number, h: number, r: number, col: number, edge: number) => {
+    shadow(g, () => g.fillRoundedRect(cx - w / 2 + 10, cy - h / 2 + 14, w, h, r));
+    g.fillStyle(edge, 1); g.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, r);
+    g.fillStyle(col, 1); g.fillRoundedRect(cx - w / 2 + 8, cy - h / 2 + 8, w - 16, h - 16, Math.max(4, r - 6));
+  };
+  const lamp = (g: Phaser.GameObjects.Graphics, x: number, y: number, col: number, r = 5) => { g.fillStyle(col, 0.35); g.fillCircle(x, y, r * 2.2); g.fillStyle(col, 1); g.fillCircle(x, y, r); g.fillStyle(0xffffff, 0.9); g.fillCircle(x - r * 0.3, y - r * 0.3, r * 0.4); };
+
+  for (let v = 0; v < STRUCT_VARIANTS; v++) {
+    // ---- mining station: cracked rock pad, drill derrick, ore heaps, conveyor and amber work lights
+    let g = gfx(scene); const M = STRUCT_SIZE.mine, c = M / 2;
+    const rock: Pt[] = []; const n = 14 + v * 2;
+    for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2, r = (M / 2 - 8) * rand(0.78, 1); rock.push({ x: c + Math.cos(a) * r, y: c + Math.sin(a) * r }); }
+    shadow(g, () => g.fillPoints(rock.map((p) => new Phaser.Geom.Point(p.x + 10, p.y + 14)), true));
+    g.fillStyle(0x4a403d, 1); g.fillPoints(rock.map((p) => new Phaser.Geom.Point(p.x, p.y)), true);
+    g.fillStyle(0x6e625c, 1); g.fillPoints(rock.map((p) => new Phaser.Geom.Point(c + (p.x - c) * 0.86 - 4, c + (p.y - c) * 0.86 - 4)), true);
+    for (let i = 0; i < 8; i++) { g.fillStyle(0x3d3431, 1); g.fillCircle(c + rand(-90, 90), c + rand(-90, 90), rand(6, 16)); }
+    // ore veins
+    g.lineStyle(4, v === 1 ? 0x9be7ff : 0xffa45c, 0.7);
+    for (let i = 0; i < 4; i++) { let x = c + rand(-60, 60), y = c + rand(-60, 60); for (let k = 0; k < 3; k++) { const nx = clampV(x + rand(-40, 40), c - 95, c + 95), ny = clampV(y + rand(-40, 40), c - 95, c + 95); g.lineBetween(x, y, nx, ny); x = nx; y = ny; } }
+    // processing shed
+    const sx = c + (v === 2 ? -60 : 50), sy = c + (v === 0 ? 40 : -50);
+    pad(g, sx, sy, 110, 70, 10, 0xb9c3d4, 0x6f7a90);
+    g.fillStyle(0x2a3350, 1); for (let i = 0; i < 4; i++) g.fillRect(sx - 45 + i * 24, sy - 26, 14, 52);
+    // conveyor to ore heap
+    const hx = c + (v === 2 ? 70 : -70), hy = c + (v === 0 ? -60 : 60);
+    g.lineStyle(14, 0x5c6478, 1); g.lineBetween(sx, sy, hx, hy); g.lineStyle(4, 0xffd166, 0.8); g.lineBetween(sx, sy, hx, hy);
+    for (let i = 0; i < 3; i++) { const r = 34 - i * 8; g.fillStyle(0x3a2d26, 1); g.fillCircle(hx + 4, hy + 5, r); g.fillStyle([0x7a5a3a, 0xa0784a, 0xc89a5a][i], 1); g.fillCircle(hx, hy, r); }
+    g.fillStyle(v === 1 ? 0x9be7ff : 0xffa45c, 0.9); for (let i = 0; i < 6; i++) g.fillCircle(hx + rand(-22, 22), hy + rand(-22, 22), 3);
+    // drill derrick
+    const dx = c + (v === 1 ? -20 : 10), dy = c + (v === 1 ? 10 : -5);
+    shadow(g, () => g.fillCircle(dx + 8, dy + 10, 36));
+    g.fillStyle(0x8f99ad, 1); g.fillCircle(dx, dy, 36); g.fillStyle(0x2a2f3c, 1); g.fillCircle(dx, dy, 26);
+    g.lineStyle(6, 0xaab4c8, 1); for (let i = 0; i < 4; i++) { const a = (i / 4) * Math.PI * 2 + Math.PI / 4; g.lineBetween(dx, dy, dx + Math.cos(a) * 44, dy + Math.sin(a) * 44); }
+    g.fillStyle(0xffa45c, 1); g.fillCircle(dx, dy, 10); g.fillStyle(0xfff1d6, 1); g.fillCircle(dx, dy, 4);
+    // work lights and a warning stripe
+    lamp(g, sx - 60, sy - 40, 0xffd166, 4); lamp(g, sx + 60, sy + 40, 0xffd166, 4); lamp(g, hx - 40, hy + 30, 0xff5a3c, 4);
+    g.lineStyle(3, 0xffd166, 0.9); g.lineBetween(sx - 55, sy + 36, sx + 55, sy + 36);
+    g.generateTexture('st_mine' + v, M, M); g.destroy();
+
+    // ---- ship repair shop: landing pad, open-fronted hangar, a hull up on jacks and a lit wrench sign
+    g = gfx(scene); const R = STRUCT_SIZE.repair, rc = R / 2;
+    pad(g, rc, rc + 20, R - 30, R - 70, 26, 0x4f5870, 0x2d3447);
+    // landing circle
+    g.lineStyle(4, 0x5ad8ff, 0.85); g.strokeCircle(rc + (v === 0 ? 70 : -70), rc + 50, 42); g.lineStyle(3, 0xffffff, 0.6); g.strokeCircle(rc + (v === 0 ? 70 : -70), rc + 50, 14);
+    // hangar
+    const hgx = rc + (v === 0 ? -55 : 55), hgy = rc - 10, hw = v === 2 ? 150 : 130, hh = 100;
+    shadow(g, () => g.fillRoundedRect(hgx - hw / 2 + 10, hgy - hh / 2 + 14, hw, hh, 16));
+    g.fillStyle(0x8f99ad, 1); g.fillRoundedRect(hgx - hw / 2, hgy - hh / 2, hw, hh, 16);
+    g.fillStyle(0xdfe6f0, 1); g.fillRoundedRect(hgx - hw / 2 + 8, hgy - hh / 2 + 8, hw - 16, hh - 16, 12);
+    g.fillStyle(0x1b2c55, 1); g.fillRect(hgx - hw / 2 + 8, hgy + hh / 2 - 34, hw - 16, 26); // open bay
+    g.fillStyle(0x5ad8ff, 0.5); g.fillRect(hgx - hw / 2 + 8, hgy + hh / 2 - 12, hw - 16, 4);
+    for (let i = 0; i < 3; i++) { g.lineStyle(3, 0xaab4c8, 1); g.lineBetween(hgx - hw / 2 + 8, hgy - hh / 2 + 24 + i * 16, hgx + hw / 2 - 8, hgy - hh / 2 + 24 + i * 16); }
+    // hull on jacks beside the hangar
+    const jx = hgx, jy = hgy + hh / 2 + 36;
+    g.fillStyle(0x2a3350, 1); g.fillRect(jx - 50, jy - 6, 8, 12); g.fillRect(jx + 42, jy - 6, 8, 12);
+    g.fillStyle([0xf4f1ea, 0xe85d3a, 0x3d7dd8][v], 1); g.fillRoundedRect(jx - 46, jy - 11, 92, 22, 10);
+    g.fillStyle(0x1b2c55, 1); g.fillRoundedRect(jx + 24, jy - 7, 16, 14, 5);
+    g.fillStyle(0xffd166, 1); g.fillCircle(jx - 20, jy - 16, 3); g.fillCircle(jx, jy + 16, 3); // welding sparks
+    // wrench sign
+    const wx = rc + (v === 0 ? 95 : -95), wy = rc - 85;
+    shadow(g, () => g.fillRoundedRect(wx - 30 + 6, wy - 18 + 8, 60, 36, 8));
+    g.fillStyle(0x1f5fb8, 1); g.fillRoundedRect(wx - 30, wy - 18, 60, 36, 8); g.lineStyle(2, 0xffffff, 1); g.strokeRoundedRect(wx - 27, wy - 15, 54, 30, 6);
+    g.lineStyle(6, 0xffffff, 1); g.lineBetween(wx - 12, wy + 9, wx + 10, wy - 8); g.fillStyle(0xffffff, 1); g.fillCircle(wx + 11, wy - 9, 7); g.fillStyle(0x1f5fb8, 1); g.fillCircle(wx + 13, wy - 11, 3);
+    lamp(g, rc - R / 2 + 32, rc + R / 2 - 30, 0x5ad8ff, 4); lamp(g, rc + R / 2 - 32, rc + R / 2 - 30, 0x5ad8ff, 4);
+    // spare parts crates
+    for (let i = 0; i < 3 + v; i++) { const x = rc + rand(-100, 100), y = rc + 110 + rand(-10, 10); g.fillStyle(0x000000, 0.25); g.fillRect(x - 9 + 3, y - 6 + 4, 18, 12); g.fillStyle([0xe8742f, 0x3db089, 0xe1b33a][i % 3], 1); g.fillRect(x - 9, y - 6, 18, 12); }
+    g.generateTexture('st_repair' + v, R, R); g.destroy();
+
+    // ---- living quarters: a cluster of habitat domes and ring modules, warm windows, corridors, a small garden
+    g = gfx(scene); const H = STRUCT_SIZE.hab, hc = H / 2;
+    const domes: { x: number; y: number; r: number }[] = v === 0
+      ? [{ x: hc - 60, y: hc - 40, r: 52 }, { x: hc + 50, y: hc - 60, r: 40 }, { x: hc + 30, y: hc + 50, r: 58 }, { x: hc - 70, y: hc + 60, r: 34 }]
+      : v === 1
+        ? [{ x: hc, y: hc, r: 62 }, { x: hc - 95, y: hc - 20, r: 36 }, { x: hc + 90, y: hc + 10, r: 38 }, { x: hc + 10, y: hc + 100, r: 30 }, { x: hc - 20, y: hc - 100, r: 30 }]
+        : [{ x: hc - 70, y: hc - 70, r: 44 }, { x: hc + 70, y: hc - 70, r: 44 }, { x: hc + 70, y: hc + 70, r: 44 }, { x: hc - 70, y: hc + 70, r: 44 }];
+    // ground plate
+    pad(g, hc, hc, H - 24, H - 24, 60, 0x56607a, 0x3a4256);
+    // corridors between domes (hub for v1, ring for v2)
+    g.lineStyle(16, 0x8f99ad, 1);
+    for (let i = 0; i < domes.length; i++) { const a = domes[i], b = domes[v === 1 ? 0 : (i + 1) % domes.length]; if (a !== b) g.lineBetween(a.x, a.y, b.x, b.y); }
+    g.lineStyle(4, 0xffd9a0, 0.6);
+    for (let i = 0; i < domes.length; i++) { const a = domes[i], b = domes[v === 1 ? 0 : (i + 1) % domes.length]; if (a !== b) g.lineBetween(a.x, a.y, b.x, b.y); }
+    // garden patch
+    const gx = hc + (v === 2 ? 0 : -10), gy = hc + (v === 2 ? 0 : 5), gr = v === 2 ? 46 : 28;
+    g.fillStyle(0x3e8f4e, 1); g.fillCircle(gx, gy, gr);
+    for (let i = 0; i < (v === 2 ? 8 : 4); i++) { const x = gx + rand(-gr * 0.6, gr * 0.6), y = gy + rand(-gr * 0.6, gr * 0.6); g.fillStyle(0x1f5f33, 1); g.fillCircle(x + 2, y + 3, 8); g.fillStyle(0x3caa55, 1); g.fillCircle(x, y, 7); }
+    for (const d of domes) {
+      shadow(g, () => g.fillCircle(d.x + 8, d.y + 10, d.r));
+      g.fillStyle(0x9aa6bd, 1); g.fillCircle(d.x, d.y, d.r);
+      g.fillStyle(0xe9eef6, 1); g.fillCircle(d.x, d.y, d.r - 7);
+      g.fillStyle(0xffffff, 0.85); g.fillCircle(d.x - d.r * 0.3, d.y - d.r * 0.3, d.r * 0.22);
+      // warm windows around the rim
+      const nw = Math.max(5, Math.floor(d.r / 7));
+      for (let i = 0; i < nw; i++) { const a = (i / nw) * Math.PI * 2 + 0.3; g.fillStyle(Math.random() < 0.8 ? 0xffd9a0 : 0x2a3350, 1); g.fillCircle(d.x + Math.cos(a) * (d.r - 14), d.y + Math.sin(a) * (d.r - 14), 3.5); }
+    }
+    // antenna mast and porch light
+    const ax = hc + H / 2 - 40, ay = hc - H / 2 + 40;
+    g.lineStyle(3, 0xaab4c8, 1); g.lineBetween(ax, ay + 18, ax, ay - 14); g.fillStyle(0xff5a3c, 1); g.fillCircle(ax, ay - 16, 3);
+    lamp(g, hc - H / 2 + 34, hc + H / 2 - 34, 0xffd9a0, 4);
+    g.generateTexture('st_hab' + v, H, H); g.destroy();
+  }
 }
 function makeNebula(scene: Phaser.Scene) {
   const size = 256;
