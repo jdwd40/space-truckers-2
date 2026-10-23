@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
 import { Cullable, DEPTH, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
-import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel } from './state';
+import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel, PAX_MAX, PAX_PAY } from './state';
 import { sfx } from './audio';
 import { Incidents, Incident } from './incidents';
 
@@ -42,6 +42,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   minicam!: Phaser.Cameras.Scene2D.Camera;
   stars!: Phaser.GameObjects.TileSprite;
   rocks: Phaser.GameObjects.Image[] = [];
+  paxG = new Map<Layby, Phaser.GameObjects.Graphics>();
   flyers: Flyer[] = [];
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
   dockS = new Map<Seg, number>();
@@ -70,6 +71,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
     this.buildScenery();
     this.culls = drawWorld(this, this.net, this.layer);
+    for (const lb of this.net.laybys) {
+      const g = this.add.graphics().setDepth(DEPTH.veh(0) + 0.2); this.layer.add(g); this.paxG.set(lb, g);
+      this.culls.push({ obj: g, x0: lb.x - 500, y0: lb.y - 500, x1: lb.x + 500, y1: lb.y + 500 });
+      this.drawPax(lb);
+    }
     for (const st of this.net.stations) {
       this.layer.add(drawStation(this, st, STATION_R));
       for (const seg of st.arr) this.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
@@ -516,12 +522,62 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.station = null;
     this.computeRoute(false);
   }
+  // ----------------------------------------------------------- passengers
+  /** little figures waiting beside the lay-by slots */
+  private drawPax(lb: Layby) {
+    const g = this.paxG.get(lb); if (!g) return;
+    g.clear();
+    const seg = lb.seg, lat = seg.laneLat(seg.lanes) + LW / 2 + 22;
+    for (let i = 0; i < lb.waiting; i++) {
+      const q = seg.path.at(lb.aux.s0 + 150 + i * 46, lat + (i % 2) * 10);
+      g.fillStyle(0x000000, 0.3); g.fillCircle(q.x + 3, q.y + 4, 7);
+      g.fillStyle([0xffb03c, 0x7ff0c0, 0xf15bb5, 0x8e8ff0][i % 4], 1); g.fillCircle(q.x, q.y, 7);
+      g.fillStyle(0xffe9c4, 1); g.fillCircle(q.x, q.y, 3.5);
+    }
+    if (lb.waiting > 0) { const q = seg.path.at(lb.aux.s0 + 150 + lb.waiting * 23 - 23, lat + 34); g.fillStyle(0x1f5fb8, 1); g.fillRoundedRect(q.x - 14, q.y - 8, 28, 16, 4); g.fillStyle(0xffffff, 1); g.fillCircle(q.x - 5, q.y - 1, 2.5); g.fillCircle(q.x + 5, q.y - 1, 2.5); g.fillRect(q.x - 7, q.y + 2, 14, 3); }
+  }
+  /** called when the rig has come to rest in a lay-by; returns true if anyone got on */
+  private boardPassengers(lb: Layby): boolean {
+    const seats = PAX_MAX - G.pax;
+    if (lb.waiting <= 0) { if (G.pax > 0) toast(`Nobody waiting here. ${G.pax} aboard for ${this.nextStationName()}.`, '#9fe9ff', 3500); return false; }
+    if (seats <= 0) { toast(`Cab is full — ${PAX_MAX} passengers aboard. Drop them at ${this.nextStationName()} first.`, '#ffd27a', 4000); return false; }
+    const n = Math.min(seats, lb.waiting);
+    lb.waiting -= n; G.pax += n; if (!G.paxFrom) G.paxFrom = lb.name;
+    if (lb.waiting === 0) lb.refillT = 120 + Math.random() * 120;
+    this.drawPax(lb);
+    sfx.chime();
+    toast(`${n} passenger${n > 1 ? 's' : ''} climbed aboard (${G.pax}/${PAX_MAX}). They want the next station: ${this.nextStationName()}. ${money(PAX_PAY)} each on arrival.`, '#7ff0c0', 5000);
+    hint('pax', `Hitch-hikers wait at lay-bys. Pull in, let them board, and every one of them pays ${money(PAX_PAY)} when you dock at the next station. Up to ${PAX_MAX} per trip.`);
+    return true;
+  }
+  /** pay out everyone aboard; runs once per docking */
+  private dropPassengers(st: Station) {
+    const n = G.pax; if (n <= 0) return;
+    const fare = n * PAX_PAY;
+    G.pax = 0; G.paxFrom = '';
+    G.money += fare; G.earned += fare; save();
+    sfx.coin();
+    toast(`${n} passenger${n > 1 ? 's' : ''} dropped off at ${st.name} — fares paid: +${money(fare)}`, '#7ff0c0', 5000);
+  }
+  /** the station the rig will reach next, following the planned route or the road straight ahead */
+  nextStationName(): string {
+    const p = this.player;
+    let seg: Seg | null = p.seg;
+    for (let i = 0; i < 24 && seg; i++) {
+      if (seg.arrStation) return seg.arrStation.name;
+      const cur: Seg = seg;
+      const t: Trans | null = p.route.find((r) => r.from === cur) ?? cur.endT;
+      seg = t ? t.to : null;
+    }
+    return 'the next station';
+  }
   private onDocked() {
     const st = this.net.stations.find((s) => s.arr.includes(this.player.seg))!;
     this.station = st;
     this.pstate = 'docked';
     G.braking = true; G.speedSet = 0;
     sfx.dock();
+    this.dropPassengers(st);
     const job = G.job;
     const tesana = (window as any).Tesana;
     if (job && job.stage === 'deliver' && job.to === st.id) {
@@ -624,6 +680,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const steps = dt > 0.025 ? 2 : 1;
     for (let i = 0; i < steps; i++) this.traffic.update(dt / steps);
     if (G.job && G.mode === 'drive' && p.state !== 'crashed') G.job.elapsed += dt;
+    for (const lb of this.net.laybys) if (lb.refillT > 0) { lb.refillT -= dt; if (lb.refillT <= 0) { lb.waiting = 1 + Math.floor(Math.random() * 3); this.drawPax(lb); } }
     this.inc.update(dt, G.mode === 'drive' && this.pstate !== 'docked');
     this.playerLogic(dt, prevS, prevSeg);
     this.updateCamera(dt);
@@ -721,7 +778,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     } else if (p.lane < seg.lanes && p.lane >= 0) this.leavingLayby = false;
     if (this.pstate === 'park' && p.v < 3 && this.extraGap(p) < 30) {
       this.pstate = 'parked'; G.braking = true; G.speedSet = 0;
-      toast('Taking a break. Pick a speed when you are ready to pull out.', '#9fe9ff', 4000);
+      const lb = this.net.laybys.find((l) => l.seg === seg && p.s >= l.aux.s0 - 20 && p.s <= l.aux.s1 + 20);
+      if (!lb || !this.boardPassengers(lb)) toast('Taking a break. Pick a speed when you are ready to pull out.', '#9fe9ff', 4000);
     }
     // police hold
     if (this.pstate === 'pulled') {

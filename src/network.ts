@@ -14,7 +14,7 @@ export interface Trans {
 }
 export interface Stop { s: number; kind: 'signal'; sig: Signal; group: number }
 export interface Services { name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[]; waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number }
-export interface Layby { seg: Seg; aux: Aux; x: number; y: number; h: number }
+export interface Layby { seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
 export interface SignPanel { side: 'L' | 'C' | 'R'; color: number; title: string; sub?: string; arrow: number | 'U' | null; icon?: string }
 export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: SignPanel[]; side: 1 | -1 }
 export interface LimitSign { seg: Seg; s: number; limit: number }
@@ -202,12 +202,18 @@ export class Network {
     return svc;
   }
   private laybyAt(seg: Seg, s0: number) {
+    if (s0 < 900 || s0 + 540 > seg.len - 900) return;
+    // keep clear of exits, merges and other lay-bys on the same side
+    if (seg.aux.some((a) => a.side === 1 && a.type !== 'merge' && s0 < a.s1 + 150 && s0 + 540 > a.s0 - 150)) return;
     const aux: Aux = { side: 1, s0, s1: s0 + 540, type: 'layby', slots: [] };
     for (let i = 0; i < 3; i++) aux.slots!.push({ s: s0 + 130 + i * 78, occ: null });
     seg.aux.push(aux);
     const p = seg.path.at(s0 + 270, seg.laneLat(seg.lanes));
-    this.laybys.push({ seg, aux, x: p.x, y: p.y, h: p.h });
-    this.signs.push({ seg, s: s0 - 500, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: '500 m', arrow: 45, icon: 'P' }] });
+    const name = `${seg.road} lay-by ${this.laybys.filter((l) => l.seg.road === seg.road).length + 1}`;
+    // a few hitch-hikers wait at most lay-bys; more drift in over time after a pickup
+    const waiting = Math.random() < 0.25 ? 0 : 1 + Math.floor(Math.random() * 3);
+    this.laybys.push({ seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
+    this.signs.push({ seg, s: s0 - 500, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
   }
   private crossing(r: { c: Path; f: Seg; r: Seg }, x: number, y: number, name: string) {
     const sc = r.c.nearest(x, y).s;
@@ -317,11 +323,13 @@ export class Network {
     const Lr = (seg: Seg) => seg.len;
     this.servicesAt(E, 5200, 4, 'Nebula Services');
     this.laybyAt(E, 8000);
+    this.laybyAt(E, 18500);
     this.uturn(E, 10200, W, terra.name);
     this.uturn(E, 22000, W, terra.name);
     this.laybyAt(E, 25500);
 
     this.laybyAt(W, 4200);
+    this.laybyAt(W, 13000);
     this.uturn(W, 7400, E, jove.name);
     this.uturn(W, 19500, E, jove.name);
     this.laybyAt(W, 22000);
@@ -329,6 +337,7 @@ export class Network {
 
     this.servicesAt(S, 5400, 2, 'Comet Fuel');
     this.laybyAt(S, 8200);
+    this.laybyAt(S, 18500);
     this.uturn(S, 10300, N, kestrel.name);
     this.uturn(S, 22200, N, kestrel.name);
     this.laybyAt(S, 25200);
@@ -336,14 +345,17 @@ export class Network {
 
     this.servicesAt(N, 2600, 2, 'Crater Fuel');
     this.laybyAt(N, 5600);
+    this.laybyAt(N, 17000);
     this.uturn(N, 8000, S, vesta.name);
     this.uturn(N, 19700, S, vesta.name);
     this.laybyAt(N, 22400);
     this.servicesAt(N, Lr(N) - 6200, 2, 'Halo Fuel');
 
     this.servicesAt(OR.f, 9000, 2, 'Ore Pit Stop');
+    this.laybyAt(OR.f, 4000);
     this.laybyAt(OR.f, 15000);
     this.laybyAt(OR.r, 6000);
+    this.laybyAt(OR.r, 17000);
     this.servicesAt(OR.r, 12000, 2, 'Quarry Fuel');
 
     const furnish = (rd: { f: Seg; r: Seg }, from: Station, to: Station, names: [string, string], pumps: [number, number]) => {
@@ -351,9 +363,12 @@ export class Network {
       const q = (x: number) => Math.round((L * x) / 100) * 100;
       this.uturn(rd.f, q(0.82), rd.r, from.name);
       this.uturn(rd.r, q(0.82), rd.f, to.name);
+      this.laybyAt(rd.f, q(0.1));
       this.laybyAt(rd.f, q(0.25));
       this.servicesAt(rd.f, q(0.45), pumps[0], names[0]);
+      this.laybyAt(rd.r, q(0.12));
       this.laybyAt(rd.r, q(0.32));
+      this.laybyAt(rd.r, q(0.7));
       this.servicesAt(rd.r, q(0.6), pumps[1], names[1]);
       for (const [seg, f] of [[rd.f, 0.62], [rd.r, 0.5]] as [Seg, number][]) {
         const s = q(f);

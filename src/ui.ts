@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { WorldScene } from './world';
-import { G, SPEEDS, CLASSES, RANKS, Job, bus, rankOf, money, distTxt, save, toast, UP, UPGRADES, nextUpgrade } from './state';
+import { G, SPEEDS, CLASSES, RANKS, Job, bus, rankOf, money, distTxt, save, toast, UP, UPGRADES, nextUpgrade, PAX_MAX, PAX_PAY } from './state';
 import { Station } from './network';
 import { clamp } from './geom';
 import { sfx } from './audio';
@@ -21,6 +21,7 @@ export class UIScene extends Phaser.Scene {
   speedT!: Phaser.GameObjects.Text;
   moneyT!: Phaser.GameObjects.Text; rankT!: Phaser.GameObjects.Text; rankBar!: Phaser.GameObjects.Graphics;
   jobT!: Phaser.GameObjects.Text; jobSub!: Phaser.GameObjects.Text; jobG!: Phaser.GameObjects.Graphics;
+  paxG!: Phaser.GameObjects.Graphics; paxT!: Phaser.GameObjects.Text; paxSub!: Phaser.GameObjects.Text;
   fuelBar!: Phaser.GameObjects.Graphics; fuelT!: Phaser.GameObjects.Text;
   navG!: Phaser.GameObjects.Graphics; navTitle!: Phaser.GameObjects.Text; navSub!: Phaser.GameObjects.Text; navDist!: Phaser.GameObjects.Text;
   navOverlay!: Phaser.GameObjects.Image; navRing!: Phaser.GameObjects.Graphics;
@@ -108,6 +109,9 @@ export class UIScene extends Phaser.Scene {
     this.jobG = this.add.graphics(); R.add(this.jobG);
     this.jobT = this.txt(30 * u, 104 * u, '', 17, '#ffffff'); R.add(this.jobT);
     this.jobSub = this.txt(30 * u, 128 * u, '', 14, '#bcd2ff', false); this.jobSub.setLineSpacing(4 * u); R.add(this.jobSub);
+    this.paxG = this.add.graphics(); R.add(this.paxG);
+    this.paxT = this.txt(30 * u, 0, '', 15, '#ffffff'); R.add(this.paxT);
+    this.paxSub = this.txt(30 * u, 0, '', 13, '#bcd2ff', false); R.add(this.paxSub);
     // fuel
     R.add(this.panel(W - 264 * u, 14 * u, 250 * u, 58 * u));
     const fg = this.add.graphics(); R.add(fg);
@@ -309,6 +313,24 @@ export class UIScene extends Phaser.Scene {
       } else {
         this.jobT.setText(G.mode === 'title' ? 'Welcome, hauler' : 'No job right now');
         this.jobSub.setText('Dock at a station to pick one');
+      }
+    }
+    // passengers card, tucked under the job card
+    const pk = `${G.pax}:${job ? 1 : 0}:${G.mode}:${w.pstate}:${G.pax > 0 ? w.nextStationName() : ''}`;
+    if (this.last.pax !== pk) {
+      this.last.pax = pk;
+      this.paxG.clear();
+      const show = G.mode === 'drive' && (G.pax > 0 || w.pstate === 'parked');
+      this.paxT.setVisible(show); this.paxSub.setVisible(show);
+      if (show) {
+        const y = (94 + (job ? 104 : 54) + 8) * u, h = 56 * u;
+        this.paxG.fillStyle(0x000000, 0.25); this.paxG.fillRoundedRect(17 * u, y + 4 * u, 300 * u, h, 12 * u);
+        this.paxG.fillStyle(PANEL, 0.88); this.paxG.fillRoundedRect(14 * u, y, 300 * u, h, 12 * u);
+        this.paxG.lineStyle(2 * u, G.pax > 0 ? 0x7ff0c0 : EDGE, 0.9); this.paxG.strokeRoundedRect(14 * u, y, 300 * u, h, 12 * u);
+        this.paxG.fillStyle(0x7ff0c0, 1);
+        for (let i = 0; i < PAX_MAX; i++) { this.paxG.fillStyle(i < G.pax ? 0x7ff0c0 : 0x223058, 1); this.paxG.fillCircle((262 + i * 18) * u, y + 18 * u, 6 * u); }
+        this.paxT.setPosition(30 * u, y + 9 * u).setText(G.pax > 0 ? `Passengers ${G.pax}/${PAX_MAX}` : 'No passengers aboard');
+        this.paxSub.setPosition(30 * u, y + 31 * u).setText(G.pax > 0 ? `Drop at next station: ${w.nextStationName()} · ${money(G.pax * PAX_PAY)} on arrival` : `Hitch-hikers at lay-bys pay ${money(PAX_PAY)} each`);
       }
     }
     // fuel

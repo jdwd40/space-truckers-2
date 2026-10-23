@@ -27,6 +27,9 @@ export interface Job {
 }
 
 export const FUEL_PRICE = 2.4; // credits per percent
+/** Lay-by passengers: seats per trip and the fare each pays on arrival at the next station. */
+export const PAX_MAX = 3;
+export const PAX_PAY = 300;
 
 /** Rig upgrades bought in the garage with earnings. Three kinds, three levels each. */
 export type UpId = 'tank' | 'bumper' | 'cab';
@@ -64,6 +67,9 @@ export const G = {
   hintsSeen: {} as Record<string, boolean>,
   fines: 0,
   warned: false,
+  /** passengers aboard this trip, picked up at lay-bys; paid out at the next station docked */
+  pax: 0,
+  paxFrom: '' as string,
 };
 
 export function rankOf(earned: number): number {
