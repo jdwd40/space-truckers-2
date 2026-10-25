@@ -42,6 +42,8 @@ export class Veh {
   isPlayer: boolean; lights = false; gfx: any = null; decideT = Math.random() * 0.6;
   hazard = false; siren = false; smoke = false; crashAng = 0; goShoulder = false; stopAt: number | null = null;
   ignoreBlock = false; emergency = false; reckless = false; squeeze = false; lastLC = -99; stopT = 0; giveUp = 0; resp: unknown = null; partner: Veh | null = null;
+  /** dock gate currently holding this ship, and the one it was last waved through */
+  gate: Gate | null = null; gateDone: Gate | null = null;
   constructor(public type: VType, public seg: Seg, public s: number, public lane: number, public v: number) {
     const sp = SPEC[type];
     this.cab = sp.cab; this.w = sp.w; this.aMax = sp.a; this.T = sp.T;
@@ -105,6 +107,13 @@ export interface PlayerCtl {
 }
 
 interface Zone { x: number; y: number; r: number; w: number }
+/**
+ * A dock gate on a station approach or exit. NPCs stop at `s` and are waved through one at a time; most of the time the
+ * gate keeps up with traffic, but every minute or two it has a busy spell and a queue builds up behind it.
+ */
+export interface Gate { seg: Seg; s: number; t: number; busy: number; calm: number; held: number }
+/** total ships on the road, and the share of them that may be local background traffic */
+const MAX_VEH = 440, MAX_LOCAL = 250;
 
 export class Traffic {
   vs: Veh[] = [];
@@ -113,6 +122,9 @@ export class Traffic {
   spawnT: number[] = [];
   localT = 0;
   zones: Zone[] = [];
+  gates: Gate[] = [];
+  /** extra departures still owed by a convoy leaving a dock, per spawn segment */
+  burst: number[] = [];
   view = { x: 0, y: 0, r: 1500 };
   onAdd: (v: Veh) => void = () => {};
   onRemove: (v: Veh) => void = () => {};
@@ -120,6 +132,7 @@ export class Traffic {
   clock = 0; bumpCool = 0;
   constructor(public net: Network, public ctl: PlayerCtl) {
     this.spawnT = net.spawnSegs.map(() => Math.random() * 3);
+    this.burst = net.spawnSegs.map(() => 0);
     this.zones.push({ x: 0, y: 0, r: 5200, w: 3 });
     for (const st of net.stations) this.zones.push({ x: st.x, y: st.y, r: 6000, w: st.id === 'terra' || st.id === 'kestrel' ? 3 : 2 });
   }
@@ -156,7 +169,7 @@ export class Traffic {
     for (const st of seg.stops) if (Math.abs(st.s - s) < 300) return true;
     return false;
   }
-  spawnNPC(seg: Seg, s: number, local: boolean, forceLane?: number, forceType?: VType): Veh | null {
+  spawnNPC(seg: Seg, s: number, local: boolean, forceLane?: number, forceType?: VType, speed?: number): Veh | null {
     const type = forceType ?? this.randType(seg);
     const n = seg.lanes;
     let lane = Math.floor(Math.random() * n);
@@ -166,7 +179,7 @@ export class Traffic {
     if (forceLane !== undefined) lane = forceLane;
     const len = SPEC[type].cab + SPEC[type].trailers.reduce((a, t) => a + t + HITCH, 0);
     if (!this.laneFree(seg, s, lane, len)) return null;
-    const v = this.add(type, seg, s, lane);
+    const v = this.add(type, seg, s, lane, speed);
     v.local = local;
     // a ship leaving a hangar is hidden by the hangar floor until it reaches the door, so it needs no fade-in: with one
     // it was still see-through a hundred units outside, right behind a rig that had just undocked
@@ -244,6 +257,7 @@ export class Traffic {
     for (const seg of this.net.segs) seg.veh.length = 0;
     for (const v of this.vs) if (!v.dead) v.seg.veh.push(v);
     for (const seg of this.net.segs) if (seg.veh.length > 1) seg.veh.sort((a, b) => a.s - b.s);
+    this.gateUpdate(dt);
     for (const sv of this.net.services) this.svcUpdate(sv);
     for (const v of this.vs) if (!v.dead) this.plan(v);
     for (const v of this.vs) if (!v.dead) this.move(v, dt);
@@ -267,16 +281,48 @@ export class Traffic {
     const count = this.vs.length;
     this.net.spawnSegs.forEach((sp, i) => {
       this.spawnT[i] -= dt;
-      if (this.spawnT[i] <= 0) {
-        this.spawnT[i] = sp.rate * rand(0.6, 1.5) * (sp.seg.kind === 'avenue' ? 1 : 1.4);
-        if (count < 380) this.spawnNPC(sp.seg, 25, false);
+      if (this.spawnT[i] > 0) return;
+      const dock = sp.seg.kind !== 'avenue';
+      if (dock && this.burst[i] > 0) {
+        // a convoy rolling out of the hangar: ships leave a second or so apart at a crawl and bunch up on the way out
+        this.spawnT[i] = rand(0.7, 1.2);
+        if (count < MAX_VEH && this.spawnNPC(sp.seg, 25, false, undefined, undefined, 70)) this.burst[i]--;
+        return;
       }
+      this.spawnT[i] = sp.rate * rand(0.6, 1.5) * (dock ? 1.05 : 1);
+      if (dock && Math.random() < 0.22) this.burst[i] = 2 + Math.floor(Math.random() * 4);
+      if (count < MAX_VEH) this.spawnNPC(sp.seg, 25, false);
     });
     this.localT -= dt;
     if (this.localT <= 0) {
       this.localT = 0.12;
       const locals = this.vs.filter((v) => v.local).length;
-      if (locals < 250 && this.vs.length < 400) this.spawnLocal();
+      if (locals < MAX_LOCAL && this.vs.length < MAX_VEH + 20) this.spawnLocal();
+    }
+  }
+
+  // ---------- dock gates ----------
+  addGate(seg: Seg, s: number) { this.gates.push({ seg, s, t: rand(0.5, 2), busy: 0, calm: rand(25, 90), held: 0 }); }
+
+  private gateUpdate(dt: number) {
+    for (const g of this.gates) {
+      g.t -= dt; g.calm -= dt;
+      if (g.busy > 0) g.busy -= dt;
+      else if (g.calm <= 0) { g.busy = rand(8, 16); g.calm = rand(70, 150); }
+      let next: Veh | null = null, held = 0;
+      for (const v of g.seg.veh) { // sorted by s, so the last match is the ship at the head of the queue
+        if (v.isPlayer || v.emergency || v.resp || v.state !== 'drive' || v.gateDone === g) continue;
+        if (v.s > g.s + 4) { if (v.gate === g) { v.gate = null; v.stopAt = null; } continue; }
+        if (v.s < g.s - 2600) continue;
+        if (v.gate !== g) { v.gate = g; v.stopAt = g.s; }
+        held++; next = v;
+      }
+      g.held = held;
+      // wave the head of the queue through once it is at (or crawling up to) the barrier; a free gate admits on arrival
+      if (next && g.t <= 0 && (next.s > g.s - 90 || next.v < 30)) {
+        next.gate = null; next.gateDone = g; next.stopAt = null;
+        g.t = g.busy > 0 ? rand(2.4, 4.2) : rand(0.9, 1.8);
+      }
     }
   }
 
@@ -485,6 +531,7 @@ export class Traffic {
       if (t.to.freeLat) v.latT = v.svc && v.pump >= 0 ? t.to.laneLat(v.svc.pumps[v.pump].lane) : 0;
     }
     v.pend = null;
+    if (v.gate) { v.gate = null; v.stopAt = null; }
     if (old.svc) {
       if (this.leaving.get(old.svc) === v) this.leaving.set(old.svc, null);
       if (v.svc && v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;

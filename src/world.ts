@@ -91,6 +91,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.traffic = new Traffic(this.net, this);
     this.traffic.onAdd = (v) => this.addVis(v);
     this.traffic.onRemove = (v) => this.removeVis(v);
+    // dock gates: arrivals queue just short of the hangar door, departures at a barrier just outside it
+    for (const st of this.net.stations) {
+      for (const seg of st.arr) this.traffic.addGate(seg, edgeS(seg, st, STATION_R, true) - 20);
+      for (const seg of st.dep) this.traffic.addGate(seg, edgeS(seg, st, STATION_R, false) + 170);
+    }
     this.incG = this.add.graphics().setDepth(DEPTH.veh(0) + 0.25); this.layer.add(this.incG);
     this.inc = new Incidents(this.net, this.traffic, {
       playerCrashed: (inc, atFault, other, fee) => this.onPlayerCrashed(inc, atFault, other, fee),
@@ -545,8 +550,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
     for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
-    for (const v of this.traffic.vs) if (!v.isPlayer && v.seg === best && v.s < 520) v.dead = true;
     const p = this.player;
+    // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
+    const lane = best.lanes - 1, lat = best.laneLat(lane);
+    for (const v of this.traffic.vs) if (!v.isPlayer && v.seg === best && Math.abs(v.lat - lat) < LW * 0.9 && v.s > 150 - p.totLen - 30 && v.s - v.totLen < 150 + 30) v.dead = true;
     p.seg = best; p.s = 150; p.lane = best.lanes - 1; p.lat = best.laneLat(p.lane); p.v = 0; p.pend = null; p.sig = 0; p.state = 'drive';
     p.resetTrail();
     this.pstate = 'drive';
