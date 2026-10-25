@@ -276,6 +276,27 @@ export class Incidents {
     this.hooks.bump(fee, atFault, o, wouldMajor);
   }
 
+  // ------------------------------------------------------------ the player runs dry
+  /** the player's own active incident (crash or breakdown), if any */
+  playerIncident(): Incident | null {
+    return this.list.find((i) => i.withPlayer && !i.done) ?? null;
+  }
+  /**
+   * Strand the player with an empty tank: a breakdown incident that reuses the crash flow (stop, police, rescue truck,
+   * release). Returns null without creating anything when the player is already in an incident or is not on a
+   * motorway running lane, so a fuel-depletion event can never dispatch a second crew.
+   */
+  playerBreakdown(): Incident | null {
+    const p = this.tr.player, seg = p.seg;
+    if (p.state === 'crashed' || this.playerIncident()) return null;
+    if (seg.kind !== 'motorway' || p.lane < 0 || p.lane >= seg.lanes) return null;
+    const inc = this.create('breakdown', seg, [p], true);
+    // the crashed state is what locks the controls and brings the rig to a halt; no smoke or crash angle for a dry tank
+    p.state = 'crashed'; p.hazard = true; p.smoke = false; p.crashAng = 0; p.pend = null; p.sig = 0; p.goShoulder = false; p.latT = null; p.wantLayby = null;
+    this.tr.bumpCool = 8;
+    return inc;
+  }
+
   // ------------------------------------------------------------ queries for the player's guidance
   hazardAhead(seg: Seg, s: number): { d: number; lanes: number[]; inc: Incident } | null {
     let best: { d: number; lanes: number[]; inc: Incident } | null = null;
@@ -296,12 +317,13 @@ export class Incidents {
     return false;
   }
   status(inc: Incident): string {
-    if (inc.phase === 'stopping') return 'Crash! Everything has stopped…';
+    const dry = inc.kind === 'breakdown';
+    if (inc.phase === 'stopping') return dry ? 'Out of fuel! Coasting to a stop…' : 'Crash! Everything has stopped…';
     if (inc.phase === 'wait') {
       if (!inc.policeHere) return `Waiting for police — they are on their way`;
-      return 'Police are on the scene — repair truck on its way';
+      return dry ? 'Police are on the scene — rescue truck on its way' : 'Police are on the scene — repair truck on its way';
     }
-    if (inc.phase === 'repair') return `Repair crew at work — about ${Math.max(1, Math.ceil(inc.repairT))}s to go`;
+    if (inc.phase === 'repair') return dry ? `Rescue truck refuelling you — about ${Math.max(1, Math.ceil(inc.repairT))}s to go` : `Repair crew at work — about ${Math.max(1, Math.ceil(inc.repairT))}s to go`;
     return 'All clear — pulling out…';
   }
 

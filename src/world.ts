@@ -432,9 +432,36 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private onPlayerReleased(inc: Incident) {
     G.braking = false; if (G.speedSet === 0) G.speedSet = 3;
     if (G.job) { G.job.target += 25; }
-    toast(G.job ? 'All fixed — back on the road! Your delivery clock was paused and you get +0:25 extra time.' : 'All fixed — back on the road!', '#7ff0c0', 5000);
+    if (inc.kind === 'breakdown') {
+      // the rescue truck leaves exactly a quarter of a tank, whatever its size
+      G.fuel = 0.25;
+      save();
+      this.computeRoute(false);
+      toast(G.job ? `Rescued — the truck left you a quarter tank (${Math.round(G.fuel * 100)}%). Delivery clock was paused and you get +0:25 extra time.` : `Rescued — the truck left you a quarter tank (${Math.round(G.fuel * 100)}%). Find a fuel stop soon!`, '#7ff0c0', 5500);
+      (window as any).Tesana?.track?.('fuel_rescue', {});
+    } else toast(G.job ? 'All fixed — back on the road! Your delivery clock was paused and you get +0:25 extra time.' : 'All fixed — back on the road!', '#7ff0c0', 5000);
     sfx.chime();
-    void inc;
+  }
+  // ----------------------------------------------------------- running out of fuel
+  /** the tank just hit zero: strand the rig now if we can, otherwise limp on reserve until a running lane allows it */
+  private onFuelOut() {
+    sfx.warn();
+    if (this.strand()) return;
+    toast('Out of fuel! Limping on reserve — you will break down on the motorway', '#ff8a7a', 5000);
+  }
+  /** breakdown for an empty tank; Incidents refuses duplicates and off-motorway spots, so this is safe to call every frame */
+  private strand(): boolean {
+    // not while docking, parking, refuelling or pulled over by police: those flows own the rig until they finish
+    if (this.pstate !== 'drive') return false;
+    const inc = this.inc.playerBreakdown();
+    if (!inc) return false;
+    const p = this.player;
+    G.braking = true; G.speedSet = 0; this.autoHold = false; this.armed = null; this.squeezeOffer = null;
+    if (G.job) G.job.delayed = true;
+    toast('⛽ Out of fuel! Police and a rescue truck are coming — your delivery clock is paused.', '#ffb4b4', 6000);
+    hint('fuelout', 'An empty tank is a breakdown: wait for the police and the rescue truck. They leave you a quarter of a tank — head for the nearest fuel stop.');
+    (window as any).Tesana?.track?.('fuel_out', { x: p.x, y: p.y });
+    return true;
   }
   baseAMax = 0;
   /** push the garage upgrades onto the player's rig */
@@ -710,8 +737,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const ds = p.seg === prevSeg ? Math.max(0, p.s - prevS) : p.v * dt;
     if (G.fuel > 0) {
       G.fuel = Math.max(0, G.fuel - (ds / 95000) * (1 + 0.12 * p.trailers.length) / tankMult());
-      if (G.fuel <= 0) { toast('Out of fuel! Limping along on reserve — find a fuel stop', '#ff8a7a', 5000); sfx.warn(); }
+      if (G.fuel <= 0) this.onFuelOut();
     }
+    // a tank that ran dry off the motorway (slip road, services, lay-by) strands the rig as soon as it is back in a running lane
+    if (G.fuel <= 0 && this.pstate === 'drive' && p.state !== 'crashed' && !this.inc.playerIncident()) this.strand();
     if (G.fuel < 0.3 && !this.fuelTarget && !seg.svc && seg.kind !== 'services' && !(seg.kind === 'ramp' && seg.endT?.to.svc) && this.clk - this.lastLowWarn > 6) {
       this.lastLowWarn = this.clk;
       let best: Services | null = null, bc = Infinity;

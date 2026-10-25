@@ -421,7 +421,7 @@ export class UIScene extends Phaser.Scene {
     }
     // warnings
     let warn = '';
-    if (p.state === 'crashed') { const ci = w.inc.list.find((i) => i.cas.includes(p)); warn = ci ? `💥 ${w.inc.status(ci)}` : '💥 Crash!'; }
+    if (p.state === 'crashed') { const ci = w.inc.list.find((i) => i.cas.includes(p)); warn = ci ? `${ci.kind === 'breakdown' ? '⛽' : '💥'} ${w.inc.status(ci)}` : '💥 Crash!'; }
     else if (w.pstate === 'pulled') warn = p.v > 3 ? '🚓 Police: pulling over…' : `🚓 Stopped by police — back on the road in ${Math.ceil(w.holdT)}s`;
     else if (w.hazardMsg) warn = w.hazardMsg;
     else if (w.redAhead) warn = '🚦 Red light ahead — press B to stop';
