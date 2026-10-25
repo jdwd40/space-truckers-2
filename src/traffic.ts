@@ -75,20 +75,22 @@ export class Veh {
       this.trail[this.tHead * 2] = this.x; this.trail[this.tHead * 2 + 1] = this.y;
     }
   }
-  /** Point at distance d behind the front along the travelled trail. */
+  /**
+   * Point at distance d behind the front along the travelled trail. Walks the real distances between the stored points:
+   * they are pushed once the ship has moved at least TSTEP, so at speed they sit further apart than that, and treating
+   * the spacing as exact put the cab and trailers too far back on every frame that had not just pushed a point. Those
+   * frames alternated with ones that had, and the rig flickered between two positions.
+   */
   back(d: number): { x: number; y: number } {
-    const hx = this.trail[this.tHead * 2], hy = this.trail[this.tHead * 2 + 1];
-    const d0 = Math.hypot(this.x - hx, this.y - hy);
-    if (d <= d0 || d0 < 0.001) {
-      if (d0 < 0.001) return { x: this.x - Math.cos(this.h) * d, y: this.y - Math.sin(this.h) * d };
-      const f = d / d0; return { x: this.x + (hx - this.x) * f, y: this.y + (hy - this.y) * f };
+    let px = this.x, py = this.y, rem = d, i = this.tHead;
+    for (let n = 0; n < TR; n++) {
+      const qx = this.trail[i * 2], qy = this.trail[i * 2 + 1];
+      const L = Math.hypot(qx - px, qy - py);
+      if (L > 1e-6 && rem <= L) { const f = rem / L; return { x: px + (qx - px) * f, y: py + (qy - py) * f }; }
+      rem -= L; px = qx; py = qy; i = (i - 1 + TR) % TR;
     }
-    const k = (d - d0) / TSTEP;
-    let j = Math.floor(k);
-    if (j >= TR - 2) j = TR - 2;
-    const f = Math.min(1, k - j);
-    const i1 = ((this.tHead - j) % TR + TR) % TR, i2 = ((this.tHead - j - 1) % TR + TR) % TR;
-    return { x: this.trail[i1 * 2] + (this.trail[i2 * 2] - this.trail[i1 * 2]) * f, y: this.trail[i1 * 2 + 1] + (this.trail[i2 * 2 + 1] - this.trail[i1 * 2 + 1]) * f };
+    // past the end of the trail (only right after a reset, when it is a straight line anyway): extend along the heading
+    return { x: px - Math.cos(this.h) * rem, y: py - Math.sin(this.h) * rem };
   }
 }
 
