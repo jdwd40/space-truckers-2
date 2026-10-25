@@ -15,6 +15,8 @@ export interface Incident {
   t: number; stopT: number; front: number; rear: number;
   policeAt: number; towAt: number; police: Veh | null; tow: Veh | null; policeHere: boolean; towHere: boolean;
   repairT: number; repairDur: number; clearT: number; withPlayer: boolean; blocks: Block[]; done: boolean; waited: number;
+  /** another incident the crews deal with first; no police or rescue truck is dispatched for this one until it is released */
+  waitFor: Incident | null;
 }
 export interface IncHooks {
   playerCrashed(inc: Incident, atFault: boolean, other: Veh | null, fee: number): void;
@@ -50,6 +52,13 @@ export class Incidents {
       inc.stopT += dt;
       if (inc.cas.every((v) => v.dead || v.v < 1.5) || inc.stopT > 9) this.settle(inc);
     } else if (inc.phase === 'wait') {
+      if (inc.waitFor) {
+        const w = inc.waitFor;
+        if (w.done || w.phase === 'clear') {
+          // the crews have finished next door and are already in the area, so they get here quicker than a cold call
+          inc.waitFor = null; inc.t = 0; inc.policeAt = rand(4, 7); inc.towAt = inc.policeAt + rand(6, 9);
+        } else { inc.t = 0; return; }
+      }
       if (!inc.police && inc.t >= inc.policeAt) this.dispatch(inc, 'police');
       if (!inc.tow && inc.t >= inc.towAt) this.dispatch(inc, 'tow');
       const l0 = inc.lanes[0];
@@ -137,6 +146,7 @@ export class Incidents {
       id: this.nextId++, kind, seg, cas, lanes: [], shoulder: false, phase: 'stopping', t: 0, stopT: 0, front: 0, rear: 0,
       policeAt: 0, towAt: 0, police: null, tow: null, policeHere: false, towHere: false,
       repairT: 0, repairDur: (kind === 'accident' ? rand(12, 17) : rand(9, 13)) * (withPlayer ? bumperRepair() : 1), clearT: 0, withPlayer, blocks: [], done: false, waited: 0,
+      waitFor: null,
     };
     this.list.push(inc);
     return inc;
@@ -251,8 +261,13 @@ export class Incidents {
     const p = a.isPlayer ? a : b, o = a.isPlayer ? b : a;
     const seg = p.seg;
     const still = o.state === 'broken' || o.state === 'crashed' || o.state === 'stopped' || (o.stopAt !== null && o.v < 3);
+    // a sustained scrape against something while a crew is already on its way must not spawn a second incident
+    if (this.playerIncident()) return;
     const lim = bumperCrashAt();
-    const major = rv >= lim || (still && rv >= lim - 22);
+    // the casualty of a breakdown or accident that is still being dealt with: any impact with it is a crash
+    const orig = this.list.find((i) => !i.done && i.phase !== 'clear' && i.cas.includes(o)) ?? null;
+    const wreck = !!orig && (o.state === 'broken' || o.state === 'crashed');
+    const major = wreck || rv >= lim || (still && rv >= lim - 22);
     const wouldMajor = rv >= 62 || (still && rv >= 40);
     const atFault = this.tr.clock - p.lastLC < 2.4 || (p.s <= o.s + 4 && p.v > o.v + 5 && Math.abs(p.lat - o.lat) < LW * 0.9) || still;
     const canInc = seg.kind === 'motorway' && p.lane >= 0 && p.lane < seg.lanes && o.lane >= 0 && o.lane < seg.lanes;
@@ -261,6 +276,11 @@ export class Incidents {
       const cas = free ? [p, o] : [p];
       const inc = this.create('accident', seg, cas, true);
       for (const c of cas) this.crash(c);
+      if (wreck && orig) {
+        // police priority: a crew already attending the original scene finishes there first; otherwise the player comes first
+        if (orig.police) inc.waitFor = orig;
+        else orig.waitFor = inc;
+      }
       this.tr.bumpCool = 8;
       const fee = atFault ? Math.round((140 + Math.random() * 80) * bumperFee() / 5) * 5 : 0;
       this.hooks.playerCrashed(inc, atFault, o, fee);
@@ -320,6 +340,7 @@ export class Incidents {
     const dry = inc.kind === 'breakdown';
     if (inc.phase === 'stopping') return dry ? 'Out of fuel! Coasting to a stop…' : 'Crash! Everything has stopped…';
     if (inc.phase === 'wait') {
+      if (inc.waitFor) return inc.waitFor.kind === 'accident' ? 'Police are finishing at the crash ahead — you are next' : 'Police are finishing with the breakdown ahead — you are next';
       if (!inc.policeHere) return `Waiting for police — they are on their way`;
       return dry ? 'Police are on the scene — rescue truck on its way' : 'Police are on the scene — repair truck on its way';
     }

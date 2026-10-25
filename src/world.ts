@@ -424,10 +424,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     G.braking = true; G.speedSet = 0; this.autoHold = false; this.armed = null;
     if (G.job) G.job.delayed = true;
     sfx.crash(); this.cameras.main.shake(420, 0.008);
-    toast(atFault ? `💥 Accident! ${money(fee)} paid. Police and a repair truck are coming — your delivery clock is paused.` : '💥 Accident — not your fault! Police and a repair truck are coming — your delivery clock is paused.', '#ffb4b4', 6000);
+    const who = inc.waitFor ? 'The crew will finish at the scene ahead, then come to you' : 'Police and a repair truck are coming';
+    toast(atFault ? `💥 Accident! ${money(fee)} paid. ${who} — your delivery clock is paused.` : `💥 Accident — not your fault! ${who} — your delivery clock is paused.`, '#ffb4b4', 6000);
     hint('crash', 'After a crash, both ships wait for police and a repair truck. Your delivery clock stops while you wait, and you get a little extra time when you set off.');
+    if (inc.waitFor || _other && (_other.state === 'crashed' || _other.state === 'broken')) hint('wreck', 'You hit a vehicle that was already stopped. Watch the sat-nav for coned-off lanes and move over early — the police deal with one scene at a time.');
     (window as any).Tesana.gameplay.death({ levelId: G.job ? G.job.id : 'free-roam', x: p.x, y: p.y, name: 'accident' });
-    void inc;
   }
   private onPlayerReleased(inc: Incident) {
     G.braking = false; if (G.speedSet === 0) G.speedSet = 3;
