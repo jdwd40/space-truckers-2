@@ -44,6 +44,8 @@ export class Veh {
   ignoreBlock = false; emergency = false; reckless = false; squeeze = false; lastLC = -99; stopT = 0; giveUp = 0; resp: unknown = null; partner: Veh | null = null;
   /** dock gate currently holding this ship, and the one it was last waved through */
   gate: Gate | null = null; gateDone: Gate | null = null;
+  /** the segment this ship was on before its current one, where it left it and where it joined this one: the trailers may still be back there */
+  prevSeg: Seg | null = null; prevS = 0; enterS = 0;
   constructor(public type: VType, public seg: Seg, public s: number, public lane: number, public v: number) {
     const sp = SPEC[type];
     this.cab = sp.cab; this.w = sp.w; this.aMax = sp.a; this.T = sp.T;
@@ -520,6 +522,7 @@ export class Traffic {
 
   private apply(v: Veh, t: Trans, over: number) {
     const old = v.seg;
+    v.prevSeg = old; v.prevS = v.s - over; v.enterS = t.toS;
     if (t.type === 'exit') { v.seg = t.to; v.s = t.toS + over; v.lane = 0; v.lat = 0; }
     else if (t.type === 'merge') { v.seg = t.to; v.s = t.toS + over; v.lane = t.side > 0 ? t.to.lanes : -1; v.lat = t.to.laneLat(v.lane); }
     else {

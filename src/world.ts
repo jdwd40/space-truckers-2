@@ -21,7 +21,7 @@ const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, ves
 
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
 
-interface Vis { units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[]; lvl: number; lvlHold: number }
+interface Vis { units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
 /** ambient high-altitude ship; `a` is its target alpha (0 while it is over a road or station) */
 interface Flyer { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; x: number; y: number; h: number; v: number; a: number }
 
@@ -46,8 +46,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   paxG = new Map<Layby, Phaser.GameObjects.Graphics>();
   /** gameplay-clock timers: they only tick while the game is not paused */
   pending: { t: number; fn: () => void }[] = [];
-  flyers: Flyer[] = []; flyerT = 0;
+  flyers: Flyer[] = [];
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
+  /** world-space direction of one screen-space unit to the right and down, from the camera rotation: shadows fall that way */
+  shX = { x: 1, y: 0 }; shY = { x: 0, y: 1 };
   dockS = new Map<Seg, number>();
   pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' = 'drive';
   station: Station | null = null;
@@ -300,7 +302,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   // ----------------------------------------------------------- vehicle visuals
   private addVis(v: Veh) {
-    const vis: Vis = { units: [], shadows: [], lvl: v.seg.level, lvlHold: 0 };
+    const vis: Vis = { units: [], shadows: [] };
     v.gfx = vis;
     this.buildUnits(v);
   }
@@ -328,7 +330,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       vis.shadows.push(sh); vis.units.push(im);
     }
     // put the new images where the ship is right away: left at the origin they showed there for a frame
-    this.placeVis(v, vis, 0);
+    this.placeVis(v, vis);
   }
   private removeVis(v: Veh) {
     const vis = v.gfx as Vis | null;
@@ -555,7 +557,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const lane = best.lanes - 1, lat = best.laneLat(lane);
     for (const v of this.traffic.vs) if (!v.isPlayer && v.seg === best && Math.abs(v.lat - lat) < LW * 0.9 && v.s > 150 - p.totLen - 30 && v.s - v.totLen < 150 + 30) v.dead = true;
     p.seg = best; p.s = 150; p.lane = best.lanes - 1; p.lat = best.laneLat(p.lane); p.v = 0; p.pend = null; p.sig = 0; p.state = 'drive';
-    p.resetTrail();
+    p.resetTrail(); p.prevSeg = best; p.prevS = 150; p.enterS = 150;
     this.pstate = 'drive';
     G.braking = !auto; G.speedSet = auto ? 3 : 0; this.autoHold = false;
     this.camH = best.path.at(150).h;
@@ -939,6 +941,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.camH += angDiff(this.camH, ph) * Math.min(1, dt * 2.2);
     cam.setZoom(this.zoomCur);
     cam.setRotation(-Math.PI / 2 - this.camH);
+    // screen = R(rotation) * world, so a screen-space offset is R(-rotation) in the world
+    const cr = -Math.PI / 2 - this.camH, cc = Math.cos(cr), cs = Math.sin(cr);
+    this.shX = { x: cc, y: -cs }; this.shY = { x: cs, y: cc };
     const ahead = (cam.height * 0.2) / this.zoomCur;
     cam.centerOn(p.x + Math.cos(this.camH) * ahead, p.y + Math.sin(this.camH) * ahead);
     // stars
@@ -955,11 +960,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (Math.floor(this.clk * 10) % 5 === 0) for (const rk of this.rocks) rk.setVisible(Math.abs(rk.x - cx) < r + 200 && Math.abs(rk.y - cy) < r + 200);
     for (const rk of this.rocks) if (rk.visible) rk.rotation += (rk as any).spin * dt;
-    // flyers: ambient ships high above the scene. They fade out over roads and stations so they are never taken for
-    // ghost traffic crossing the carriageway.
-    this.flyerT -= dt;
-    const checkRoads = this.flyerT <= 0;
-    if (checkRoads) this.flyerT = 0.25;
+    // flyers: ambient ships high above the scene. They fade out well before any road or station, checked every frame,
+    // so they are never taken for ghost traffic crossing the carriageway.
     for (const f of this.flyers) {
       if (Math.hypot(f.x - cx, f.y - cy) > r + 900) {
         const a = rand(0, Math.PI * 2);
@@ -967,27 +969,27 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         f.h = a + Math.PI + rand(-0.6, 0.6); f.v = rand(150, 320);
       }
       f.x += Math.cos(f.h) * f.v * dt; f.y += Math.sin(f.h) * f.v * dt;
-      if (checkRoads) {
-        let near = this.net.stations.some((st) => Math.hypot(st.x - f.x, st.y - f.y) < STATION_R + 300);
-        if (!near) for (const rd of this.net.roads) { if (f.x < rd.c.minX - 400 || f.x > rd.c.maxX + 400 || f.y < rd.c.minY - 400 || f.y > rd.c.maxY + 400) continue; if (rd.c.nearest(f.x, f.y).d < 380) { near = true; break; } }
-        f.a = near ? 0 : 1;
-      }
-      const al = f.img.alpha + Math.sign(f.a - f.img.alpha) * Math.min(Math.abs(f.a - f.img.alpha), dt * 2.5);
+      let near = this.net.stations.some((st) => Math.hypot(st.x - f.x, st.y - f.y) < STATION_R + 300);
+      if (!near) for (const rd of this.net.roads) { if (f.x < rd.c.minX - 400 || f.x > rd.c.maxX + 400 || f.y < rd.c.minY - 400 || f.y > rd.c.maxY + 400) continue; if (rd.c.nearest(f.x, f.y).d < 380) { near = true; break; } }
+      f.a = near ? 0 : 1;
+      const al = f.img.alpha + Math.sign(f.a - f.img.alpha) * Math.min(Math.abs(f.a - f.img.alpha), dt * 6);
       f.img.setPosition(f.x, f.y).setRotation(f.h).setAlpha(al);
-      f.sh.setPosition(f.x + 60, f.y + 80).setRotation(f.h).setAlpha(0.25 * al);
+      const ox = 60, oy = 80;
+      f.sh.setPosition(f.x + ox * this.shX.x + oy * this.shY.x, f.y + ox * this.shX.y + oy * this.shY.y).setRotation(f.h).setAlpha(0.25 * al);
     }
   }
 
   /** put a ship's cab and trailer images where the ship is, at the depth of the deck it is on */
-  private placeVis(v: Veh, vis: Vis, dt: number) {
-    if (v.seg.level !== vis.lvl) {
-      if (v.seg.level > vis.lvl || vis.lvlHold <= 0) { vis.lvlHold = v.seg.level > vis.lvl ? 0 : 0.9; }
-      if (v.seg.level > vis.lvl) vis.lvl = v.seg.level;
-      else { vis.lvlHold -= dt; if (vis.lvlHold <= 0) vis.lvl = v.seg.level; }
-    }
-    const lvl = vis.lvl;
-    const depth = DEPTH.veh(lvl);
-    const shOff = 5 + lvl * 7;
+  private placeVis(v: Veh, vis: Vis) {
+    // each unit is drawn at the depth of the deck it is actually on: a unit further back than the nose has come along
+    // this segment is still on the previous one. The shadow offset follows the height, easing in along a flyover's ramp.
+    const deck = (dBehind: number): { lvl: number; k: number } => {
+      let seg = v.seg, s = v.s - dBehind;
+      if (s < v.enterS && v.prevSeg) { seg = v.prevSeg; s = v.prevS + (s - v.enterS); }
+      const lvl = seg.level;
+      const k = lvl > 0 && seg.kind === 'ramp' ? clamp(Math.min(s, seg.len - s) / 300, 0, 1) : 1;
+      return { lvl, k };
+    };
     // cab
     const fr = { x: v.x, y: v.y };
     const cr = v.back(v.cab);
@@ -1001,11 +1003,18 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       units.push({ x: (F.x + R.x) / 2, y: (F.y + R.y) / 2, a: Math.atan2(F.y - R.y, F.x - R.x), L: t });
       d += t + HITCH;
     }
+    let lvl = 0, back = 0;
     units.forEach((u, i) => {
       const im = vis.units[i], sh = vis.shadows[i];
+      const dk = deck(back + u.L / 2);
+      back += u.L + HITCH;
+      lvl = dk.lvl;
       if (!im) return;
+      const depth = DEPTH.veh(dk.lvl);
+      // the shadow falls down and to the right on screen whichever way the camera is turned
+      const ox = 5 + dk.lvl * 7 * dk.k, oy = ox * 1.3;
       im.setPosition(u.x, u.y).setRotation(u.a).setDepth(depth).setAlpha(v.alpha);
-      sh.setPosition(u.x + shOff, u.y + shOff * 1.3).setRotation(u.a).setDepth(depth - 0.05).setAlpha(0.3 * v.alpha);
+      sh.setPosition(u.x + ox * this.shX.x + oy * this.shY.x, u.y + ox * this.shX.y + oy * this.shY.y).setRotation(u.a).setDepth(depth - 0.05).setAlpha(0.3 * v.alpha);
     });
     return { units, lvl };
   }
@@ -1024,7 +1033,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       for (const u of vis.units) u.setVisible(vis2);
       for (const u of vis.shadows) u.setVisible(vis2);
       if (!vis2) continue;
-      const { units, lvl } = this.placeVis(v, vis, dt);
+      const { units, lvl } = this.placeVis(v, vis);
       if (v.alpha < 0.05) continue;
       // lights
       const g = this.fx[Math.min(3, lvl)];
