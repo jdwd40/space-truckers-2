@@ -163,6 +163,9 @@ export class Traffic {
     if (!this.laneFree(seg, s, lane, len)) return null;
     const v = this.add(type, seg, s, lane);
     v.local = local;
+    // a ship leaving a hangar is hidden by the hangar floor until it reaches the door, so it needs no fade-in: with one
+    // it was still see-through a hundred units outside, right behind a rig that had just undocked
+    if (seg.depStation) v.age = 0.8;
     v.reckless = type === 'pod' || type === 'sport' ? Math.random() < 0.5 : Math.random() < 0.03;
     if (seg.kind !== 'avenue') {
       const options = this.net.stations.filter((st) => st !== seg.depStation);
