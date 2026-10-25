@@ -61,8 +61,11 @@ export class Veh {
   resetTrail() {
     const p = this.pose();
     this.x = p.x; this.y = p.y; this.h = p.h;
-    for (let i = 0; i < TR; i++) { this.trail[i * 2] = p.x - Math.cos(p.h) * i * TSTEP; this.trail[i * 2 + 1] = p.y - Math.sin(p.h) * i * TSTEP; }
-    this.tHead = 0; this.tN = TR;
+    // back() walks the ring downwards from tHead, so the point i steps behind the nose goes at tHead - i. Filled the other
+    // way round, the first lookups after a reset hit the far end of the ring and drew the cab and trailers hundreds of
+    // units behind the ship until it had driven far enough to overwrite them.
+    this.tHead = TR - 1; this.tN = TR;
+    for (let i = 0; i < TR; i++) { const k = this.tHead - i; this.trail[k * 2] = p.x - Math.cos(p.h) * i * TSTEP; this.trail[k * 2 + 1] = p.y - Math.sin(p.h) * i * TSTEP; }
   }
   pushTrail() {
     const hx = this.trail[this.tHead * 2], hy = this.trail[this.tHead * 2 + 1];
