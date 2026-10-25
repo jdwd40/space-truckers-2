@@ -453,10 +453,6 @@ function drawSegPiece(g: G, seg: Seg, s0: number, s1: number) {
   const bandC = sh / 2, bandW = n * W + sh;
   const step = seg.kind === 'ramp' ? 10 : 18;
   const P = (lat: number | ((s: number) => number), a = s0, b = s1) => seg.path.pts(a, b, lat, step);
-  if (seg.level > 0) {
-    g.lineStyle(bandW + 12, 0x000000, 0.22);
-    strokePts(g, P(bandC).map((p) => ({ x: p.x + 10 + 8 * seg.level, y: p.y + 14 + 10 * seg.level })));
-  }
   // left aux zones (in the median)
   const leftZ = seg.aux.filter((z) => z.side < 0 && z.s1 > s0 && z.s0 < s1);
   const leftLat = (z: typeof leftZ[0]) => (s: number) => {
@@ -505,6 +501,17 @@ function drawSegPiece(g: G, seg: Seg, s0: number, s1: number) {
   }
 }
 
+/**
+ * The shadow a flyover casts on the deck below. It is drawn apart from the deck itself so it can sit under that lower
+ * deck's traffic: drawn at the flyover's own depth it tinted every ship in the lane beside the ramp's tangent runs.
+ */
+function drawSegShadow(g: G, seg: Seg, s0: number, s1: number) {
+  const sh = seg.shoulder ? LW : 0;
+  const bandC = sh / 2, bandW = seg.lanes * seg.laneW + sh;
+  g.lineStyle(bandW + 12, 0x000000, 0.22);
+  strokePts(g, seg.path.pts(s0, s1, bandC, 10).map((p) => ({ x: p.x + 10 + 8 * seg.level, y: p.y + 14 + 10 * seg.level })));
+}
+
 function bboxOf(pts: Pt[], pad: number) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
@@ -520,10 +527,17 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     const chunk = 900;
     for (let s0 = 0; s0 < seg.len; s0 += chunk) {
       const s1 = Math.min(seg.len, s0 + chunk + 2);
+      const bb = bboxOf(seg.path.pts(s0, s1, 0, 50), 160 + seg.level * 50);
+      if (seg.level > 0) {
+        // above the deck below, below that deck's ships
+        const sg = scene.add.graphics().setDepth(DEPTH.veh(seg.level - 1) - 0.3);
+        drawSegShadow(sg, seg, s0, s1);
+        add(sg, bb);
+      }
       const g = scene.add.graphics();
       g.setDepth(DEPTH.road(seg.level));
       drawSegPiece(g, seg, s0, s1);
-      add(g, bboxOf(seg.path.pts(s0, s1, 0, 50), 160 + seg.level * 50));
+      add(g, bb);
     }
   }
   // crossings
@@ -572,8 +586,9 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     const cg = scene.add.graphics().setDepth(DEPTH.veh(0) + 0.6);
     const cp = seg.path.at(sv.pumpS - 20, 0);
     cg.setPosition(cp.x, cp.y); cg.setRotation(sv.h);
-    cg.fillStyle(0xeaf2ff, 0.28); cg.fillRoundedRect(-44, -W / 2 - 14, 88, W + 28, 8);
+    // outline only: a filled canopy over the pumps tinted every vehicle that drove or parked under it
     cg.lineStyle(3, 0x5ad8ff, 0.9); cg.strokeRoundedRect(-44, -W / 2 - 14, 88, W + 28, 8);
+    cg.lineStyle(1.5, 0xeaf2ff, 0.5); cg.strokeRoundedRect(-40, -W / 2 - 10, 80, W + 20, 6);
     add(cg, { x0: cp.x - 200, y0: cp.y - 200, x1: cp.x + 200, y1: cp.y + 200 });
   }
   // lay-by gardens
@@ -659,7 +674,9 @@ function makeSign(scene: Phaser.Scene, sg: Sign) {
   const base = seg.path.at(sg.s, 0);
   const c = scene.add.container(base.x, base.y);
   c.setRotation(base.h + Math.PI / 2);
-  c.setDepth(sg.kind === 'gantry' ? DEPTH.sign + seg.level * 3 : 16.6);
+  // a gantry board used to sit above the vehicles on its own level, so every rig passing under it blinked out for a
+  // few frames; it now sits just above the road surface instead. Side signs stay on top but clear of any aux lane.
+  c.setDepth(sg.kind === 'gantry' ? DEPTH.road(seg.level) + 0.7 : 16.6);
   if (sg.kind === 'gantry') {
     const g = scene.add.graphics();
     const barW = sg.panels.length > 1 ? Math.max(n * LW + sh + 36, sg.panels.length * 144 + 16) : n * LW + sh + 36;
@@ -680,7 +697,8 @@ function makeSign(scene: Phaser.Scene, sg: Sign) {
     }
   } else {
     const p = sg.panels[0];
-    const x = sg.side > 0 ? half + sh + 100 : -half - 100;
+    const auxW = seg.auxAt(sg.s, sg.side) ? LW : 0;
+    const x = sg.side > 0 ? half + sh + auxW + 100 : -half - auxW - 100;
     const g = scene.add.graphics();
     g.fillStyle(0x5c6478, 1); g.fillRect(x - 3, 0, 6, 34);
     c.add(g);
@@ -780,13 +798,17 @@ export function drawStation(scene: Phaser.Scene, st: Station, R: number): Phaser
     }
     g.fillStyle(0x23293a, 1); g.fillCircle(0, 0, 150); g.fillStyle(0xff7a2a, 1); g.fillCircle(0, 0, 95); g.fillStyle(0xffe0a8, 1); g.fillCircle(0, 0, 44);
   }
-  // hangar doors where roads enter
+  // hangar doors where roads enter, with a hangar floor over the road end behind each door: ships spawn, fade and
+  // despawn under it, so none of that is ever seen from outside
   for (const seg of [...st.arr, ...st.dep]) {
     const isArr = st.arr.includes(seg);
     const sEdge = edgeS(seg, st, R, isArr);
     const p = seg.path.at(sEdge, 0);
     const w = (seg.lanes * LW) / 2 + 22;
     const nx = -Math.sin(p.h), ny = Math.cos(p.h);
+    const a0 = isArr ? sEdge - 6 : 0, a1 = isArr ? seg.len : sEdge + 6;
+    const left = seg.path.pts(a0, a1, -(w + 8)), right = seg.path.pts(a0, a1, w + 8).reverse();
+    g.fillStyle(0x141a28, 1); g.fillPoints([...left, ...right].map((q) => new Phaser.Geom.Point(q.x - st.x, q.y - st.y)), true);
     g.lineStyle(16, 0x1c2232, 1); g.lineBetween(p.x - st.x - nx * w, p.y - st.y - ny * w, p.x - st.x + nx * w, p.y - st.y + ny * w);
     g.lineStyle(5, isArr ? 0x5ad8ff : 0x7ff0c0, 1); g.lineBetween(p.x - st.x - nx * w, p.y - st.y - ny * w, p.x - st.x + nx * w, p.y - st.y + ny * w);
   }

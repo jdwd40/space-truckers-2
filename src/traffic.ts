@@ -428,8 +428,10 @@ export class Traffic {
     v.pushTrail();
     const seg = v.seg;
     let al = Math.min(1, v.age / 0.8);
-    if (!v.isPlayer && (seg.arrStation || seg.despawn) && !seg.endT) al = Math.min(al, (seg.len - v.s) / 140);
-    if (!v.isPlayer && seg.depStation && v.s < 160) al = Math.min(al, v.s / 140);
+    // dock roads run about 60 units inside the hangar door, so arrivals and departures fade under the hangar floor
+    if (!v.isPlayer && seg.despawn && !seg.endT) al = Math.min(al, (seg.len - v.s) / 140);
+    else if (!v.isPlayer && seg.arrStation && !seg.endT) al = Math.min(al, (seg.len - v.s - 15) / 35);
+    if (!v.isPlayer && seg.depStation && v.s < 60) al = Math.min(al, (v.s - 10) / 35);
     v.alpha = clamp(al, 0, 1);
     if (!v.isPlayer && (seg.arrStation || seg.despawn) && !seg.endT && v.s > seg.len - 15) v.dead = true;
     if (v.local && !v.isPlayer && v.age > 3 && v.state === 'drive' && !v.emergency) {

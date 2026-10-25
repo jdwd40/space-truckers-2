@@ -22,7 +22,8 @@ const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, ves
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
 
 interface Vis { units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[]; lvl: number; lvlHold: number }
-interface Flyer { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; x: number; y: number; h: number; v: number }
+/** ambient high-altitude ship; `a` is its target alpha (0 while it is over a road or station) */
+interface Flyer { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; x: number; y: number; h: number; v: number; a: number }
 
 export class WorldScene extends Phaser.Scene implements PlayerCtl {
   net!: Network;
@@ -45,7 +46,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   paxG = new Map<Layby, Phaser.GameObjects.Graphics>();
   /** gameplay-clock timers: they only tick while the game is not paused */
   pending: { t: number; fn: () => void }[] = [];
-  flyers: Flyer[] = [];
+  flyers: Flyer[] = []; flyerT = 0;
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
   dockS = new Map<Seg, number>();
   pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' = 'drive';
@@ -236,7 +237,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const img = this.add.image(0, 0, key).setScale(0.65).setDepth(16.5);
       const sh = this.add.image(0, 0, key).setScale(0.65).setDepth(16.4).setTint(0x000000).setAlpha(0.25);
       this.layer.add(sh); this.layer.add(img);
-      this.flyers.push({ img, sh, x: 1e9, y: 1e9, h: 0, v: rand(160, 320) });
+      this.flyers.push({ img, sh, x: 1e9, y: 1e9, h: 0, v: rand(160, 320), a: 0 });
     }
   }
   private layoutStars() {
@@ -321,6 +322,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.layer.add(sh); this.layer.add(im);
       vis.shadows.push(sh); vis.units.push(im);
     }
+    // put the new images where the ship is right away: left at the origin they showed there for a frame
+    this.placeVis(v, vis, 0);
   }
   private removeVis(v: Veh) {
     const vis = v.gfx as Vis | null;
@@ -945,7 +948,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (Math.floor(this.clk * 10) % 5 === 0) for (const rk of this.rocks) rk.setVisible(Math.abs(rk.x - cx) < r + 200 && Math.abs(rk.y - cy) < r + 200);
     for (const rk of this.rocks) if (rk.visible) rk.rotation += (rk as any).spin * dt;
-    // flyers
+    // flyers: ambient ships high above the scene. They fade out over roads and stations so they are never taken for
+    // ghost traffic crossing the carriageway.
+    this.flyerT -= dt;
+    const checkRoads = this.flyerT <= 0;
+    if (checkRoads) this.flyerT = 0.25;
     for (const f of this.flyers) {
       if (Math.hypot(f.x - cx, f.y - cy) > r + 900) {
         const a = rand(0, Math.PI * 2);
@@ -953,11 +960,48 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         f.h = a + Math.PI + rand(-0.6, 0.6); f.v = rand(150, 320);
       }
       f.x += Math.cos(f.h) * f.v * dt; f.y += Math.sin(f.h) * f.v * dt;
-      f.img.setPosition(f.x, f.y).setRotation(f.h);
-      f.sh.setPosition(f.x + 60, f.y + 80).setRotation(f.h);
+      if (checkRoads) {
+        let near = this.net.stations.some((st) => Math.hypot(st.x - f.x, st.y - f.y) < STATION_R + 300);
+        if (!near) for (const rd of this.net.roads) { if (f.x < rd.c.minX - 400 || f.x > rd.c.maxX + 400 || f.y < rd.c.minY - 400 || f.y > rd.c.maxY + 400) continue; if (rd.c.nearest(f.x, f.y).d < 380) { near = true; break; } }
+        f.a = near ? 0 : 1;
+      }
+      const al = f.img.alpha + Math.sign(f.a - f.img.alpha) * Math.min(Math.abs(f.a - f.img.alpha), dt * 2.5);
+      f.img.setPosition(f.x, f.y).setRotation(f.h).setAlpha(al);
+      f.sh.setPosition(f.x + 60, f.y + 80).setRotation(f.h).setAlpha(0.25 * al);
     }
   }
 
+  /** put a ship's cab and trailer images where the ship is, at the depth of the deck it is on */
+  private placeVis(v: Veh, vis: Vis, dt: number) {
+    if (v.seg.level !== vis.lvl) {
+      if (v.seg.level > vis.lvl || vis.lvlHold <= 0) { vis.lvlHold = v.seg.level > vis.lvl ? 0 : 0.9; }
+      if (v.seg.level > vis.lvl) vis.lvl = v.seg.level;
+      else { vis.lvlHold -= dt; if (vis.lvlHold <= 0) vis.lvl = v.seg.level; }
+    }
+    const lvl = vis.lvl;
+    const depth = DEPTH.veh(lvl);
+    const shOff = 5 + lvl * 7;
+    // cab
+    const fr = { x: v.x, y: v.y };
+    const cr = v.back(v.cab);
+    let ang = Math.atan2(fr.y - cr.y, fr.x - cr.x);
+    if (v.v < 1 && v.age < 0.3) ang = v.h;
+    ang += v.crashAng;
+    const units: { x: number; y: number; a: number; L: number }[] = [{ x: (fr.x + cr.x) / 2, y: (fr.y + cr.y) / 2, a: ang, L: v.cab }];
+    let d = v.cab + HITCH;
+    for (const t of v.trailers) {
+      const F = v.back(d), R = v.back(d + t);
+      units.push({ x: (F.x + R.x) / 2, y: (F.y + R.y) / 2, a: Math.atan2(F.y - R.y, F.x - R.x), L: t });
+      d += t + HITCH;
+    }
+    units.forEach((u, i) => {
+      const im = vis.units[i], sh = vis.shadows[i];
+      if (!im) return;
+      im.setPosition(u.x, u.y).setRotation(u.a).setDepth(depth).setAlpha(v.alpha);
+      sh.setPosition(u.x + shOff, u.y + shOff * 1.3).setRotation(u.a).setDepth(depth - 0.05).setAlpha(0.3 * v.alpha);
+    });
+    return { units, lvl };
+  }
   private updateVisuals(dt: number) {
     const cam = this.cameras.main;
     const cx = cam.midPoint.x, cy = cam.midPoint.y;
@@ -968,37 +1012,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     for (const v of this.traffic.vs) {
       const vis = v.gfx as Vis | null;
       if (!vis) continue;
-      const vis2 = Math.abs(v.x - cx) < r && Math.abs(v.y - cy) < r;
+      // the whole rig counts, so a long one is not cut off while its trailers are still on screen
+      const vis2 = Math.abs(v.x - cx) < r + v.totLen && Math.abs(v.y - cy) < r + v.totLen;
       for (const u of vis.units) u.setVisible(vis2);
       for (const u of vis.shadows) u.setVisible(vis2);
       if (!vis2) continue;
-      if (v.seg.level !== vis.lvl) {
-        if (v.seg.level > vis.lvl || vis.lvlHold <= 0) { vis.lvlHold = v.seg.level > vis.lvl ? 0 : 0.9; }
-        if (v.seg.level > vis.lvl) vis.lvl = v.seg.level;
-        else { vis.lvlHold -= dt; if (vis.lvlHold <= 0) vis.lvl = v.seg.level; }
-      }
-      const lvl = vis.lvl;
-      const depth = DEPTH.veh(lvl);
-      const shOff = 5 + lvl * 7;
-      // cab
-      const fr = { x: v.x, y: v.y };
-      const cr = v.back(v.cab);
-      let ang = Math.atan2(fr.y - cr.y, fr.x - cr.x);
-      if (v.v < 1 && v.age < 0.3) ang = v.h;
-      ang += v.crashAng;
-      const units: { x: number; y: number; a: number; L: number }[] = [{ x: (fr.x + cr.x) / 2, y: (fr.y + cr.y) / 2, a: ang, L: v.cab }];
-      let d = v.cab + HITCH;
-      for (const t of v.trailers) {
-        const F = v.back(d), R = v.back(d + t);
-        units.push({ x: (F.x + R.x) / 2, y: (F.y + R.y) / 2, a: Math.atan2(F.y - R.y, F.x - R.x), L: t });
-        d += t + HITCH;
-      }
-      units.forEach((u, i) => {
-        const im = vis.units[i], sh = vis.shadows[i];
-        if (!im) return;
-        im.setPosition(u.x, u.y).setRotation(u.a).setDepth(depth).setAlpha(v.alpha);
-        sh.setPosition(u.x + shOff, u.y + shOff * 1.3).setRotation(u.a).setDepth(depth - 0.05).setAlpha(0.3 * v.alpha);
-      });
+      const { units, lvl } = this.placeVis(v, vis, dt);
       if (v.alpha < 0.05) continue;
       // lights
       const g = this.fx[Math.min(3, lvl)];
