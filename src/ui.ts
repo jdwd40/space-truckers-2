@@ -65,6 +65,7 @@ export class UIScene extends Phaser.Scene {
     else if (k === 'w' || k === 'arrowup') bus.emit('speed', clamp(G.speedSet + 1, 1, 5));
     else if (k === 's' || k === 'arrowdown') { if (G.speedSet <= 1) bus.emit('brake'); else bus.emit('speed', G.speedSet - 1); }
     else if (k === 'm') this.toggleMute();
+    else if (k === 'e') bus.emit('act');
   }
   private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; }
   // ------------------------------------------------------------------ pause
@@ -209,6 +210,8 @@ export class UIScene extends Phaser.Scene {
     wg.lineStyle(2 * u, 0xff6b6b, 1); wg.strokeRoundedRect(-200 * u, -18 * u, 400 * u, 36 * u, 18 * u);
     this.warnT = this.txt(0, 0, '', 16, '#ffffff', true, [0.5, 0.5]);
     this.warnBox.add([wg, this.warnT]); this.warnBox.setVisible(false); R.add(this.warnBox);
+    this.warnBox.setInteractive(new Phaser.Geom.Rectangle(-200 * u, -18 * u, 400 * u, 36 * u), Phaser.Geom.Rectangle.Contains);
+    this.warnBox.on('pointerdown', () => { if (this.last.warn && this.last.warn.startsWith('🔋')) bus.emit('act'); });
     // toast
     this.toastBox = this.add.container(W / 2, 30 * u);
     this.toastG = this.add.graphics();
@@ -314,11 +317,12 @@ export class UIScene extends Phaser.Scene {
     }
     // job card
     const job = G.job;
-    const jkey = job ? `${job.id}:${job.stage}:${Math.floor(job.elapsed)}:${Math.round(w.remain / 100)}` : 'none';
+    const fav = w.favours ? w.favours.hud() : '';
+    const jkey = (job ? `${job.id}:${job.stage}:${Math.floor(job.elapsed)}:${Math.round(w.remain / 100)}` : 'none') + '|' + fav;
     if (this.last.job !== jkey) {
       this.last.job = jkey;
       this.jobG.clear();
-      const h = job ? 104 * u : 54 * u;
+      const h = (job ? 104 : 54) * u + (fav ? 22 * u : 0);
       this.jobG.fillStyle(0x000000, 0.25); this.jobG.fillRoundedRect(17 * u, 98 * u, 300 * u, h, 12 * u);
       this.jobG.fillStyle(PANEL, 0.88); this.jobG.fillRoundedRect(14 * u, 94 * u, 300 * u, h, 12 * u);
       this.jobG.lineStyle(2 * u, job ? 0xffd23c : EDGE, 0.9); this.jobG.strokeRoundedRect(14 * u, 94 * u, 300 * u, h, 12 * u);
@@ -327,10 +331,10 @@ export class UIScene extends Phaser.Scene {
         this.jobT.setText(job.stage === 'pickup' ? `Collect: ${job.cargo}` : `${job.cargo}`);
         const left = Math.max(0, job.target - job.elapsed);
         const bonus = left > 0 ? `On-time bonus: ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : 'Bonus time passed — no rush';
-        this.jobSub.setText(`${job.stage === 'pickup' ? 'Pick up at' : 'Deliver to'} ${dest}\nPays ${money(job.pay)} · ${distTxt(w.remain)} to go\n${bonus}`);
+        this.jobSub.setText(`${job.stage === 'pickup' ? 'Pick up at' : 'Deliver to'} ${dest}\nPays ${money(job.pay)} · ${distTxt(w.remain)} to go\n${bonus}` + (fav ? `\n${fav}` : ''));
       } else {
         this.jobT.setText(G.mode === 'title' ? 'Welcome, hauler' : 'No job right now');
-        this.jobSub.setText('Dock at a station to pick one');
+        this.jobSub.setText('Dock at a station to pick one' + (fav ? `\n${fav}` : ''));
       }
     }
     // passengers card, tucked under the job card
@@ -434,7 +438,7 @@ export class UIScene extends Phaser.Scene {
       this.warnT.setText(warn);
       const wg = this.warnBox.list[0] as Phaser.GameObjects.Graphics;
       const ww = Math.max(300 * u, this.warnT.width + 40 * u);
-      const good = warn.startsWith('Pick') || warn.startsWith('Resting');
+      const good = warn.startsWith('Pick') || warn.startsWith('Resting') || warn.startsWith('🔋');
       wg.clear(); wg.fillStyle(good ? 0x14503a : 0x6a1820, 0.95); wg.fillRoundedRect(-ww / 2, -18 * u, ww, 36 * u, 18 * u);
       wg.lineStyle(2 * u, good ? 0x7ff0c0 : 0xff6b6b, 1); wg.strokeRoundedRect(-ww / 2, -18 * u, ww, 36 * u, 18 * u);
     }

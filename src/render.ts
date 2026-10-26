@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { Network, Seg, LW, Sign, SignPanel, Station } from './network';
+import { Network, Seg, LW, TAPER, Sign, SignPanel, Station } from './network';
 import { Pt, rand, clamp as clampV } from './geom';
+import type { Outposts } from './outposts';
 
 export interface Cullable { obj: Phaser.GameObjects.GameObject & { setVisible(v: boolean): unknown }; x0: number; y0: number; x1: number; y1: number }
 
@@ -51,6 +52,41 @@ export function makeTextures(scene: Phaser.Scene) {
   };
   CAB_COLORS.forEach((c, i) => cab('cab' + i, c, 22, 17, i === 0 ? 0xe85d3a : 0xffffff));
   cab('cab_player', 0xd93b30, 26, 17, 0xffffff);
+  // long-haul cabs: dark liveries with chrome trim and amber roof markers
+  [0x2b3140, 0x4a2630, 0x1f3a4a, 0x3a2f1f, 0x2d3b2a, 0x3b2a4a].forEach((c, i) => {
+    const g = gfx(scene); const L = 24 * S, W = 18 * S;
+    g.fillStyle(0x23293a, 1); g.fillRoundedRect(0, 4, 10, W - 4, 3);
+    g.fillStyle(c, 1); g.fillRoundedRect(6, 2, L - 4, W, 9);
+    g.fillStyle(0xd9e1ee, 1); g.fillRect(8, 4, L - 18, 3); g.fillRect(8, W - 3, L - 18, 3);
+    g.fillStyle(0xffb020, 1); for (let k = 0; k < 4; k++) g.fillCircle(14 + k * 7, W / 2 + 2, 1.6);
+    g.fillStyle(0x1b2c55, 1); g.fillRoundedRect(L - 14, 6, 11, W - 8, 4);
+    g.fillStyle(0x9fe9ff, 0.8); g.fillRect(L - 11, 8, 3, W - 12);
+    g.fillStyle(0xc9d3e0, 1); g.fillRect(L - 3, 5, 4, W - 6);
+    g.generateTexture('cabh' + i, L + 4, W + 4); g.destroy();
+  });
+  // tanker cab: brushed silver with a hazard placard
+  {
+    const g = gfx(scene); const L = 22 * S, W = 17 * S;
+    g.fillStyle(0x23293a, 1); g.fillRoundedRect(0, 4, 10, W - 4, 3);
+    g.fillStyle(0xb8c2d2, 1); g.fillRoundedRect(6, 2, L - 4, W, 9);
+    g.fillStyle(0xffffff, 0.5); g.fillRect(10, 5, L - 26, 3);
+    g.fillStyle(0xff8a1f, 1); g.fillRect(12, W / 2 - 3, 10, 8); g.fillStyle(0x23293a, 1); g.fillRect(14, W / 2 - 1, 6, 4);
+    g.fillStyle(0x1b2c55, 1); g.fillRoundedRect(L - 14, 6, 11, W - 8, 4);
+    g.fillStyle(0x9fe9ff, 0.8); g.fillRect(L - 11, 8, 3, W - 12);
+    g.generateTexture('cab_tank', L + 4, W + 4); g.destroy();
+  }
+  // local shuttles: stubby two-tone people movers with a lit roof bar
+  [[0xf2f4f8, 0x2ec4b6], [0xf2f4f8, 0xf2b134], [0xf2f4f8, 0x9b5de5]].forEach(([a, b], i) => {
+    const g = gfx(scene); const L = 44 * S, W = 16 * S;
+    g.fillStyle(0x23293a, 1); g.fillRoundedRect(0, 4, 10, W - 4, 3);
+    g.fillStyle(b, 1); g.fillRoundedRect(4, 2, L, W, 14);
+    g.fillStyle(a, 1); g.fillRoundedRect(4, 2, L, W / 2 + 2, { tl: 14, tr: 14, bl: 0, br: 0 });
+    g.fillStyle(0x1b2c55, 1); for (let k = 0; k < 5; k++) g.fillRoundedRect(12 + k * 14, 6, 10, W - 12, 4);
+    g.fillStyle(0x9fe9ff, 0.7); for (let k = 0; k < 5; k++) g.fillRect(14 + k * 14, 8, 3, W - 16);
+    g.fillStyle(0x1b2c55, 1); g.fillRoundedRect(L - 12, 6, 12, W - 8, 5);
+    g.fillStyle(0xffd23c, 1); g.fillRoundedRect(L / 2 - 10, W / 2 - 1, 20, 4, 2);
+    g.generateTexture('shuttle' + i, L + 4, W + 4); g.destroy();
+  });
   // police
   {
     const g = gfx(scene); const L = 28 * S, W = 14 * S;
@@ -469,23 +505,50 @@ function drawSegPiece(g: G, seg: Seg, s0: number, s1: number) {
   g.lineStyle(bandW + 10, RIM, 1); strokePts(g, P(bandC));
   g.lineStyle(bandW, ASPH, 1); strokePts(g, P(bandC));
   for (const z of leftZ) { g.lineStyle(LW, ASPH, 1); strokePts(g, P(leftLat(z), Math.max(s0, z.s0), Math.min(s1, z.s1))); }
+  // lane drop / gain tapers at section joins: the outer edge slides in over TAPER units
+  const len = seg.len;
+  const outer = (s: number) => {
+    let o = half;
+    if (seg.drop && s > len - TAPER) o -= seg.drop * W * Math.min(1, (s - (len - TAPER)) / TAPER);
+    if (seg.gain && s < TAPER) o -= seg.gain * W * Math.min(1, (TAPER - s) / TAPER);
+    return o;
+  };
+  const tapered = (seg.drop > 0 && s1 > len - TAPER) || (seg.gain > 0 && s0 < TAPER);
+  const edge = (off: number) => (tapered ? (s: number) => outer(s) + off : half + off);
   if (sh) {
     for (const r of auxRanges(seg, s0, s1, 1)) {
-      if (!r.inAux) { g.lineStyle(sh - 3, SHOULDER, 1); strokePts(g, P(half + sh / 2, r.a, r.b)); }
+      if (!r.inAux) { g.lineStyle(sh - 3, SHOULDER, 1); strokePts(g, P(edge(sh / 2), r.a, r.b)); }
+    }
+  }
+  if (tapered) {
+    // hatching across the dead wedge
+    g.lineStyle(2, 0xffffff, 0.35);
+    const ranges: [number, number][] = [];
+    if (seg.drop && s1 > len - TAPER) ranges.push([Math.max(s0, len - TAPER), Math.min(s1, len)]);
+    if (seg.gain && s0 < TAPER) ranges.push([Math.max(s0, 0), Math.min(s1, TAPER)]);
+    for (const [a, b] of ranges) for (let s = Math.ceil(a / 40) * 40; s < b; s += 40) {
+      if (half - outer(s) < 8) continue;
+      const q0 = seg.path.at(s, outer(s) + 3), q1 = seg.path.at(Math.min(s + 22, b), half - 3);
+      g.lineBetween(q0.x, q0.y, q1.x, q1.y);
     }
   }
   // neon edge strips
   g.lineStyle(2, NEON, 0.55);
-  strokePts(g, P(half + sh + 5));
+  strokePts(g, P(edge(sh + 5)));
   strokePts(g, P(-half - 5));
   // edge lines
   g.lineStyle(2.5, 0xf2c94c, 0.9);
   for (const r of auxRanges(seg, s0, s1, -1)) { if (r.inAux) dashLine(g, seg, r.a, r.b, -half + 2, 14, 10); else strokePts(g, P(-half + 3, r.a, r.b)); }
   g.lineStyle(2.5, 0xffffff, 0.85);
-  for (const r of auxRanges(seg, s0, s1, 1)) { if (r.inAux) dashLine(g, seg, r.a, r.b, half - 1, 14, 10); else strokePts(g, P(half - 2, r.a, r.b)); }
+  for (const r of auxRanges(seg, s0, s1, 1)) { if (r.inAux) dashLine(g, seg, r.a, r.b, half - 1, 14, 10); else strokePts(g, P(edge(-2), r.a, r.b)); }
   if (seg.kind !== 'services') {
     g.lineStyle(2, 0xffffff, 0.6);
-    for (let i = 1; i < n; i++) dashLine(g, seg, s0, s1, -half + i * W);
+    for (let i = 1; i < n; i++) {
+      let a = s0, b = s1;
+      if (seg.drop && i >= n - seg.drop) b = Math.min(b, len - TAPER);
+      if (seg.gain && i >= n - seg.gain) a = Math.max(a, TAPER);
+      if (b > a) dashLine(g, seg, a, b, -half + i * W);
+    }
   }
   if (seg.kind === 'ramp' && seg.level > 0) {
     // little guide lights along flyovers
@@ -721,12 +784,14 @@ function makeLimitSign(scene: Phaser.Scene, seg: Seg, s: number, limit: number) 
 }
 
 // ---------------------------------------------------------------- stations & scenery
-export function drawStation(scene: Phaser.Scene, st: Station, R: number): Phaser.GameObjects.Graphics {
+export function drawStation(scene: Phaser.Scene, st: Station, R: number, outposts?: Outposts, extras: Phaser.GameObjects.GameObject[] = []): Phaser.GameObjects.Graphics {
   const g = scene.add.graphics().setDepth(DEPTH.station);
   g.setPosition(st.x, st.y);
   const ring = (r: number, w: number, col: number, a = 1) => { g.lineStyle(w, col, a); g.strokeCircle(0, 0, r); };
   g.fillStyle(0x000000, 0.35); g.fillCircle(40, 55, R);
-  if (st.id === 'kestrel') {
+  if (outposts && outposts.layouts.has(st.id)) {
+    outposts.draw(scene, g, st, extras);
+  } else if (st.id === 'kestrel') {
     ring(R - 60, 110, 0x9aa6bd); ring(R - 60, 80, 0xd9e1ee); ring(R - 60, 6, 0x5ad8ff, 0.9);
     for (let i = 0; i < 16; i++) { const a = (i / 16) * Math.PI * 2; g.fillStyle(i % 2 ? 0xbfcadb : 0xf0f4fa, 1); g.fillRoundedRect(Math.cos(a) * (R - 60) - 34, Math.sin(a) * (R - 60) - 34, 68, 68, 12); g.fillStyle(0x5ad8ff, 0.9); g.fillCircle(Math.cos(a) * (R - 60), Math.sin(a) * (R - 60), 9); }
     g.lineStyle(26, 0xaab4c8, 1);

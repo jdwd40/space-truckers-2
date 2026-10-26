@@ -1,11 +1,14 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
 import { Cullable, DEPTH, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
 import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel, PAX_MAX, PAX_PAY } from './state';
 import { sfx } from './audio';
 import { Incidents, Incident } from './incidents';
+import { Outposts } from './outposts';
+import { Landmarks } from './scenery';
+import { Favours } from './favours';
 
 const STATION_R = 1250;
 const CARGO: Record<string, string[]> = {
@@ -61,6 +64,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; incG!: Phaser.GameObjects.Graphics; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
+  outposts!: Outposts; decoG!: Phaser.GameObjects.Graphics;
+  landmarks!: Landmarks; landG!: Phaser.GameObjects.Graphics; favours!: Favours;
 
   constructor() { super('world'); }
 
@@ -81,10 +86,17 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.culls.push({ obj: g, x0: lb.x - 500, y0: lb.y - 500, x1: lb.x + 500, y1: lb.y + 500 });
       this.drawPax(lb);
     }
+    this.landmarks = new Landmarks(this, this.net, this.layer);
+    this.culls.push(...this.landmarks.culls);
+    this.landG = this.add.graphics().setDepth(3.5); this.layer.add(this.landG);
+    this.outposts = new Outposts(this.net, STATION_R);
     for (const st of this.net.stations) {
-      this.layer.add(drawStation(this, st, STATION_R));
+      const extras: Phaser.GameObjects.GameObject[] = [];
+      this.layer.add(drawStation(this, st, STATION_R, this.outposts, extras));
+      for (const e of extras) this.layer.add(e);
       for (const seg of st.arr) this.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
     }
+    this.decoG = this.add.graphics().setDepth(DEPTH.station + 0.3); this.layer.add(this.decoG);
     for (let l = 0; l < 4; l++) { const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD); this.fx.push(g); this.layer.add(g); }
     this.fxTop = this.add.graphics().setDepth(DEPTH.fxTop).setBlendMode(Phaser.BlendModes.ADD); this.layer.add(this.fxTop);
     this.guide = this.add.graphics(); this.layer.add(this.guide);
@@ -99,6 +111,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       for (const seg of st.dep) this.traffic.addGate(seg, edgeS(seg, st, STATION_R, false) + 170);
     }
     this.incG = this.add.graphics().setDepth(DEPTH.veh(0) + 0.25); this.layer.add(this.incG);
+    this.favours = new Favours(this.net, this.traffic, this);
+    bus.on('act', () => this.favours.act());
     this.inc = new Incidents(this.net, this.traffic, {
       playerCrashed: (inc, atFault, other, fee) => this.onPlayerCrashed(inc, atFault, other, fee),
       playerReleased: (inc) => this.onPlayerReleased(inc),
@@ -186,11 +200,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     // so they stay inside the camera's view, and are spaced so the roadside stays readable and varied.
     const placed: { x: number; y: number; r: number }[] = [];
     const SIGN_BAND = 400;
-    const clear = (rd: { f: Seg; r: Seg }, x: number, y: number, half: number) => {
+    const clear = (rd: Road, x: number, y: number, half: number) => {
       for (const o of placed) if (Math.hypot(o.x - x, o.y - y) < o.r + half + 200) return false;
       if (this.net.stations.some((st) => Math.hypot(st.x - x, st.y - y) < STATION_R + half + 100)) return false;
       for (const seg of this.net.segs) {
-        if (seg === rd.f || seg === rd.r) continue;
+        if (rd.f.includes(seg) || rd.r.includes(seg)) continue;
         const bb = seg.path; if (x < bb.minX - half - 300 || x > bb.maxX + half + 300 || y < bb.minY - half - 300 || y > bb.maxY + half + 300) continue;
         if (seg.path.nearest(x, y).d < half + (seg.kind === 'motorway' ? 260 : 180)) return false;
       }
@@ -320,6 +334,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     else if (v.type === 'van') keys.push('van' + v.variant);
     else if (v.type === 'police') keys.push('police');
     else if (v.type === 'player') keys.push('cab_player');
+    else if (v.type === 'shuttle') keys.push('shuttle' + (v.variant % 3));
+    else if (v.type === 'tanker') keys.push('cab_tank');
+    else if (v.type === 'long' || v.type === 'train') keys.push('cabh' + v.variant);
     else keys.push('cab' + v.variant);
     const style = v.type === 'player' ? (G.job ? TRAILER_FOR[G.job.from] ?? 0 : 0) : v.type === 'tanker' ? 6 : [0, 1, 2, 3, 4, 5, 7][(v.variant + v.id) % 7];
     for (const t of v.trailers) keys.push(trailerTex(this, t, v.type === 'player' && G.job ? (G.job.cls === 3 ? 5 : style) : style));
@@ -411,6 +428,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   onTrans(v: Veh, t: Trans) {
     if (t.type === 'exit') {
+      this.favours.onExit(t);
       if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
@@ -617,6 +635,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const st = this.net.stations.find((s) => s.arr.includes(this.player.seg))!;
     this.station = st;
     this.pstate = 'docked';
+    this.favours.onDocked(st);
     G.braking = true; G.speedSet = 0;
     sfx.dock();
     this.dropPassengers(st);
@@ -734,7 +753,13 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.playerLogic(dt, prevS, prevSeg);
     this.updateCamera(dt);
     this.updateVisuals(dt);
-    this.inc.draw(this.incG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur);
+    const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
+    this.inc.draw(this.incG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.decoG.clear(); this.landG.clear();
+    this.outposts.update(this.decoG, this.fxTop, this.net, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.landmarks.update(this.landG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.favours.update(dt, G.mode === 'drive' && this.pstate !== 'docked' && p.state !== 'crashed');
+    this.favours.draw(this.fxTop, this.clk);
     this.updateEscort(dt);
     this.drawGuide();
     this.drawSignals();
@@ -881,8 +906,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         else if (this.inc.inSlowZone(seg, p.s)) this.hazardMsg = '👮 Police are directing traffic — keep it slow';
         else if (hz.d < 1800) this.hazardMsg = `⚠ ${what} ahead — a lane is coned off`;
         if (hz.d < 2200) hint('incident', 'Police have coned off a lane ahead. Watch the sat-nav — it shows which lanes are open. Press A or D to change lane; your rig slows down past the scene.');
+      } else if (this.traffic.dropping(seg, p.lane, p.s) && p.pend === null) {
+        this.hazardMsg = '⚠ Lane ends ahead — press A to move left';
+        hint('lanedrop', 'The road narrows ahead and your lane ends. Press A to move left; if you leave it late your rig slides across by itself at the taper.');
       }
     }
+    if (!this.hazardMsg) this.hazardMsg = this.favours.prompt();
     // nav info
     this.routeRedraw -= dt;
     if (this.routeRedraw <= 0) { this.routeRedraw = 1; this.drawRoute(); }
@@ -891,7 +920,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   private computeNav(): NavInfo {
     const p = this.player, seg = p.seg;
-    const lanesAll = seg.kind === 'motorway' ? Array(seg.lanes).fill(true) : null;
+    const lanesAll: boolean[] | null = seg.kind === 'motorway' ? Array.from({ length: seg.lanes }, (_, i) => !this.traffic.dropping(seg, i, p.s) && !this.traffic.deadLane(seg, i, p.s)) : null;
     if (!p.goal) return { title: 'Free roam', sub: 'Dock at any station for new jobs', dist: 0, arrow: 0, lanes: lanesAll, aux: 0, remain: 0 };
     if (this.pstate === 'fuel') return { title: 'Refuelling', sub: 'Filling the tank…', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
     let d = 0, ss = p.s, next: Trans | null = null, total = 0;

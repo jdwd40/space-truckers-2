@@ -1,9 +1,15 @@
 import { Path, Pt, Pose, bezier, catmull } from './geom';
 
-export const LW = 26;
+/** Lane width. Wider lanes give the big rigs room to manoeuvre. */
+export const LW = 32;
 export const MEDIAN = 80;
+/** Length of the painted taper where a lane is dropped or gained at a section join. */
+export const TAPER = 600;
 
 export type SegKind = 'motorway' | 'ramp' | 'services' | 'avenue';
+/** Lanes for a carriageway: a single count, or [[fractionOfRoadEnd, lanes], ...] sections (lanes change on the outer side). */
+export type LaneProfile = number | [number, number][];
+export interface Road { name: string; c: Path; f: Seg[]; r: Seg[]; fLen: number; rLen: number }
 
 export interface Station { id: string; name: string; kind: string; x: number; y: number; color: number; arr: Seg[]; dep: Seg[] }
 export interface Slot { s: number; occ: unknown }
@@ -67,6 +73,12 @@ export class Seg {
   localOK = false;
   density = 1;
   trucky = false;
+  /** lanes dropped on the outer side at the end of this section / gained at its start */
+  drop = 0;
+  gain = 0;
+  /** neighbouring sections of the same carriageway */
+  prev: Seg | null = null;
+  next: Seg | null = null;
   constructor(public name: string, public path: Path, public lanes: number, public kind: SegKind, public level = 0, public limit = 5) {}
   get len(): number { return this.path.len; }
   laneLat(i: number): number { return (i - (this.lanes - 1) / 2) * this.laneW; }
@@ -93,7 +105,7 @@ export class Network {
   limitSigns: LimitSign[] = [];
   crossings: Crossing[] = [];
   cameras: Camera[] = [];
-  roads: { name: string; c: Path; f: Seg; r: Seg }[] = [];
+  roads: Road[] = [];
   spawnSegs: { seg: Seg; rate: number; mitesOnly: boolean }[] = [];
   byId: Record<string, Station> = {};
 
@@ -110,15 +122,59 @@ export class Network {
     t.from.outs.push(tr);
     return tr;
   }
-  private road(name: string, ctrl: Pt[], nF: number, nR: number, kind: SegKind = 'motorway', median = MEDIAN) {
+  /**
+   * A dual carriageway along a centre path. Each direction is a chain of sections with their own lane
+   * count, joined end-to-end; the median edge stays fixed so lane i continues as lane i and lanes are
+   * added or dropped on the outer (slow) side.
+   */
+  private road(name: string, ctrl: Pt[], pF: LaneProfile, pR: LaneProfile, kind: SegKind = 'motorway', median = MEDIAN): Road {
     const c = new Path(catmull(ctrl, 24));
-    const offF = median / 2 + (nF * LW) / 2, offR = median / 2 + (nR * LW) / 2;
-    const f = this.seg(name + ' F', new Path(c.pts(0, c.len, offF, 12)), nF, kind);
-    const r = this.seg(name + ' R', new Path(c.pts(0, c.len, -offR, 12).reverse()), nR, kind);
-    f.road = r.road = name;
-    if (kind === 'motorway') { f.shoulder = r.shoulder = true; }
-    this.roads.push({ name, c, f, r });
-    return { c, f, r };
+    const norm = (p: LaneProfile): [number, number][] => (typeof p === 'number' ? [[1, p]] : p);
+    const chain = (dir: 1 | -1, prof: [number, number][]): Seg[] => {
+      const segs: Seg[] = [];
+      let f0 = 0;
+      for (const [f1, n] of prof) {
+        const a = dir > 0 ? f0 * c.len : (1 - f1) * c.len, b = dir > 0 ? f1 * c.len : (1 - f0) * c.len;
+        const pts = c.pts(a, b, dir * (median / 2 + (n * LW) / 2), 12);
+        if (dir < 0) pts.reverse();
+        const s = this.seg(name + (dir > 0 ? ' F' : ' R'), new Path(pts), n, kind);
+        s.road = name;
+        if (kind === 'motorway') s.shoulder = true;
+        segs.push(s);
+        f0 = f1;
+      }
+      for (let i = 0; i + 1 < segs.length; i++) {
+        const A = segs[i], B = segs[i + 1];
+        A.next = B; B.prev = A;
+        A.endT = this.addT({ type: 'end', from: A, fromS: A.len, to: B, toS: 0, side: 1, latShift: ((A.lanes - B.lanes) * LW) / 2, label: name, kind: 'link', dir: 'S' });
+        if (A.lanes > B.lanes) A.drop = A.lanes - B.lanes;
+        else if (B.lanes > A.lanes) B.gain = B.lanes - A.lanes;
+      }
+      return segs;
+    };
+    const f = chain(1, norm(pF)), r = chain(-1, norm(pR));
+    const len = (ss: Seg[]) => ss.reduce((a, s) => a + s.len, 0);
+    const rd: Road = { name, c, f, r, fLen: len(f), rLen: len(r) };
+    this.roads.push(rd);
+    return rd;
+  }
+  /** (section, local s) for a distance along a chained carriageway */
+  private locate(segs: Seg[], s: number): { seg: Seg; s: number } {
+    let i = 0;
+    while (i < segs.length - 1 && s > segs[i].len) { s -= segs[i].len; i++; }
+    return { seg: segs[i], s };
+  }
+  /** nearest point on any section of a carriageway */
+  private nearestIn(segs: Seg[], x: number, y: number): { seg: Seg; s: number } {
+    let best = segs[0], bs = 0, bd = Infinity;
+    for (const seg of segs) { const n = seg.path.nearest(x, y); if (n.d < bd) { bd = n.d; best = seg; bs = n.s; } }
+    return { seg: best, s: bs };
+  }
+  /** a point at s on seg, walking into the neighbouring section when s falls off either end */
+  private place(seg: Seg, s: number): { seg: Seg; s: number } {
+    while (s < 0 && seg.prev) { seg = seg.prev; s += seg.len; }
+    while (s > seg.len && seg.next) { s -= seg.len; seg = seg.next; }
+    return { seg, s };
   }
   auxPt(seg: Seg, s: number, side: number): Pose {
     return seg.path.at(s, seg.laneLat(side > 0 ? seg.lanes : -1));
@@ -148,19 +204,20 @@ export class Network {
     this.byId[id] = st;
     return st;
   }
-  private gates(r: { f: Seg; r: Seg }, start: Station, end: Station, rate: number) {
-    r.f.depStation = start; start.dep.push(r.f);
-    r.r.arrStation = start; start.arr.push(r.r);
-    r.r.depStation = end; end.dep.push(r.r);
-    r.f.arrStation = end; end.arr.push(r.f);
-    this.spawnSegs.push({ seg: r.f, rate, mitesOnly: false }, { seg: r.r, rate, mitesOnly: false });
+  private gates(r: Road, start: Station, end: Station, rate: number) {
+    const f0 = r.f[0], fN = r.f[r.f.length - 1], r0 = r.r[0], rN = r.r[r.r.length - 1];
+    f0.depStation = start; start.dep.push(f0);
+    rN.arrStation = start; start.arr.push(rN);
+    r0.depStation = end; end.dep.push(r0);
+    fN.arrStation = end; end.arr.push(fN);
+    this.spawnSegs.push({ seg: f0, rate, mitesOnly: false }, { seg: r0, rate, mitesOnly: false });
   }
-  private uturn(a: Seg, sA: number, b: Seg, label: string) {
+  private uturn(a: Seg, sA: number, bs: Seg[], label: string) {
     const p = a.path.at(sA);
-    const sB = b.path.nearest(p.x, p.y).s;
+    const { seg: b, s: sB } = this.nearestIn(bs, p.x, p.y);
     const r = this.ramp(a, sA, 1, b, sB, 1, 0, { level: 2, limit: 2, label, kind: 'uturn', dir: 'U', uturn: 430, decel: 650 });
     const t = a.outs[a.outs.length - 1];
-    this.signs.push({ seg: a, s: sA - 1300, kind: 'gantry', side: 1, panels: [{ side: 'R', color: GREEN, title: 'Turn back', sub: `to ${label}  1.3 km`, arrow: 'U' }] });
+    this.signs.push({ ...this.place(a, sA - 1300), kind: 'gantry', side: 1, panels: [{ side: 'R', color: GREEN, title: 'Turn back', sub: `to ${label}  1.3 km`, arrow: 'U' }] });
     this.signs.push({ seg: a, s: sA + 60, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: 'Turn back', sub: label, arrow: 'U' }] });
     return { r, t };
   }
@@ -197,7 +254,7 @@ export class Network {
     ps.svc = svc; te.svc = svc;
     this.services.push(svc);
     const big = pumps > 2;
-    this.signs.push({ seg: host, s: s0 - 1500, kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title: big ? 'Fuel & services' : 'Fuel stop', sub: `${name}  1 km`, arrow: 45, icon: 'fuel' }] });
+    this.signs.push({ ...this.place(host, s0 - 1500), kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title: big ? 'Fuel & services' : 'Fuel stop', sub: `${name}  1 km`, arrow: 45, icon: 'fuel' }] });
     this.signs.push({ seg: host, s: s0 + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Fuel', sub: name, arrow: 45, icon: 'fuel' }] });
     return svc;
   }
@@ -213,28 +270,30 @@ export class Network {
     // a few hitch-hikers wait at most lay-bys; more drift in over time after a pickup
     const waiting = Math.random() < 0.25 ? 0 : 1 + Math.floor(Math.random() * 3);
     this.laybys.push({ seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
-    this.signs.push({ seg, s: s0 - 500, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
+    this.signs.push({ ...this.place(seg, s0 - 500), kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
   }
-  private crossing(r: { c: Path; f: Seg; r: Seg }, x: number, y: number, name: string) {
+  private crossing(r: Road, x: number, y: number, name: string) {
     const sc = r.c.nearest(x, y).s;
     const p = r.c.at(sc);
     const ph = p.h + Math.PI / 2;
     const L = 2800;
     const av = this.road(name, [{ x: p.x - Math.cos(ph) * L, y: p.y - Math.sin(ph) * L }, p, { x: p.x + Math.cos(ph) * L, y: p.y + Math.sin(ph) * L }], 2, 2, 'avenue', 30);
-    av.f.limit = av.r.limit = 3;
-    av.f.despawn = av.r.despawn = true;
-    this.spawnSegs.push({ seg: av.f, rate: 2.4, mitesOnly: true }, { seg: av.r, rate: 2.4, mitesOnly: true });
+    const avF = av.f[0], avR = av.r[0];
+    avF.limit = avR.limit = 3;
+    avF.despawn = avR.despawn = true;
+    this.spawnSegs.push({ seg: avF, rate: 2.4, mitesOnly: true }, { seg: avR, rate: 2.4, mitesOnly: true });
     const sig = new Signal(this.signals.length, p.x, p.y);
     this.signals.push(sig);
-    const halfMain = MEDIAN / 2 + r.f.lanes * LW + LW + 6;
+    const main = [this.nearestIn(r.f, p.x, p.y), this.nearestIn(r.r, p.x, p.y)];
+    const halfMain = MEDIAN / 2 + Math.max(main[0].seg.lanes, main[1].seg.lanes) * LW + LW + 6;
     const halfAve = 15 + 2 * LW + 6;
     const lights: Crossing['lights'] = [];
-    for (const seg of [r.f, r.r]) {
-      const s = seg.path.nearest(p.x, p.y).s - halfAve - 16;
-      seg.stops.push({ s, kind: 'signal', sig, group: 0 });
-      lights.push({ seg, s, group: 0 });
+    for (const m of main) {
+      const s = m.s - halfAve - 16;
+      m.seg.stops.push({ s, kind: 'signal', sig, group: 0 });
+      lights.push({ seg: m.seg, s, group: 0 });
     }
-    for (const seg of [av.f, av.r]) {
+    for (const seg of [avF, avR]) {
       const s = seg.path.nearest(p.x, p.y).s - halfMain - 16;
       seg.stops.push({ s, kind: 'signal', sig, group: 1 });
       lights.push({ seg, s, group: 1 });
@@ -242,15 +301,14 @@ export class Network {
     const a = { x: Math.cos(p.h), y: Math.sin(p.h) }, b = { x: Math.cos(ph), y: Math.sin(ph) };
     const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => ({ x: p.x + a.x * halfAve * i + b.x * halfMain * j, y: p.y + a.y * halfAve * i + b.y * halfMain * j }));
     this.crossings.push({ x: p.x, y: p.y, h: p.h, sig, corners, lights });
-    for (const seg of [r.f, r.r]) {
-      const s = seg.path.nearest(p.x, p.y).s;
-      this.signs.push({ seg, s: s - 700, kind: 'side', side: 1, panels: [{ side: 'R', color: 0x8a5a14, title: 'Traffic lights', sub: name, arrow: null, icon: 'lights' }] });
+    for (const m of main) {
+      this.signs.push({ ...this.place(m.seg, m.s - 700), kind: 'side', side: 1, panels: [{ side: 'R', color: 0x8a5a14, title: 'Traffic lights', sub: name, arrow: null, icon: 'lights' }] });
     }
   }
   private interchangeSigns(seg: Seg, tl: Trans, tr: Trans, through: string) {
     for (const back of [2200, 1250]) {
       const s = tl.fromS - back;
-      this.signs.push({ seg, s, kind: 'gantry', side: 1, panels: [
+      this.signs.push({ ...this.place(seg, s), kind: 'gantry', side: 1, panels: [
         { side: 'L', color: GREEN, title: tl.label, sub: `Exit left  ${dist(tl.fromS - s)}`, arrow: -45 },
         { side: 'C', color: GREEN, title: through, sub: 'Straight on', arrow: 0 },
         { side: 'R', color: GREEN, title: tr.label, sub: `Exit right  ${dist(tr.fromS - s)}`, arrow: 45 },
@@ -270,35 +328,49 @@ export class Network {
     const ember = this.station('ember', 'Ember Refinery', 'Fuel refinery', -14500, 15000, 0xff7a45);
 
     const P = (a: number[][]) => a.map(([x, y]) => ({ x, y }));
-    const M1 = this.road('M1', P([[-15000, 1500], [-13700, 1500], [-12400, 1500], [-11100, 1500], [-9500, 900], [-7600, -200], [-5800, -300], [-4200, 0], [-2600, 0], [0, 0], [2600, 0], [4200, 0], [6000, 300], [8200, 600], [10200, -300], [12400, -1100], [15000, -1000]]), 5, 5);
-    const M2 = this.road('M2', P([[900, -15000], [900, -13700], [900, -12400], [900, -11100], [300, -9300], [-700, -7400], [-500, -5600], [0, -4200], [0, -2600], [0, 0], [0, 2600], [0, 4200], [700, 6000], [900, 8200], [-300, 10300], [-600, 12500], [0, 15000]]), 4, 4);
-    const OR = this.road('Ore Road', P([[1100, 15800], [2600, 15800], [5200, 15000], [8200, 12900], [11000, 9600], [13200, 6200], [14900, 3200], [15900, 1200], [15900, -200]]), 3, 3);
+    // Lane profiles: [[fraction of the road where the section ends, lanes], ...] per direction.
+    // Section joins are placed clear of services, lay-bys, exits and signals (validate() checks this).
+    const M1 = this.road('M1', P([[-15000, 1500], [-13700, 1500], [-12400, 1500], [-11100, 1500], [-9500, 900], [-7600, -200], [-5800, -300], [-4200, 0], [-2600, 0], [0, 0], [2600, 0], [4200, 0], [6000, 300], [8200, 600], [10200, -300], [12400, -1100], [15000, -1000]]),
+      [[0.2838, 4], [0.672, 5], [1, 4]], [[0.3114, 4], [0.6617, 5], [1, 4]]);
+    const M2 = this.road('M2', P([[900, -15000], [900, -13700], [900, -12400], [900, -11100], [300, -9300], [-700, -7400], [-500, -5600], [0, -4200], [0, -2600], [0, 0], [0, 2600], [0, 4200], [700, 6000], [900, 8200], [-300, 10300], [-600, 12500], [0, 15000]]),
+      [[0.2858, 4], [0.677, 5], [1, 4]], [[0.3115, 4], [0.6615, 5], [1, 4]]);
+    const OR = this.road('Ore Road', P([[1100, 15800], [2600, 15800], [5200, 15000], [8200, 12900], [11000, 9600], [13200, 6200], [14900, 3200], [15900, 1200], [15900, -200]]),
+      [[0.25, 3], [0.6, 2], [1, 3]], [[0.35, 3], [0.72, 2], [1, 3]]);
     this.gates(M1, terra, jove, 1.0);
     this.gates(M2, kestrel, vesta, 1.2);
     this.gates(OR, vesta, jove, 5);
-    const E = M1.f, W = M1.r, S = M2.f, N = M2.r;
-    E.name = 'M1 East'; W.name = 'M1 West'; S.name = 'M2 South'; N.name = 'M2 North'; OR.f.name = 'Ore Road'; OR.r.name = 'Ore Road';
-    for (const r of [M1, M2]) { r.f.localOK = r.r.localOK = true; }
-    OR.f.trucky = OR.r.trucky = true; OR.f.density = OR.r.density = 0.5;
+    const nameAll = (segs: Seg[], name: string) => { for (const s of segs) s.name = name; };
+    nameAll(M1.f, 'M1 East'); nameAll(M1.r, 'M1 West'); nameAll(M2.f, 'M2 South'); nameAll(M2.r, 'M2 North'); nameAll(OR.f, 'Ore Road'); nameAll(OR.r, 'Ore Road');
+    const both = (rd: Road) => [...rd.f, ...rd.r];
+    for (const r of [M1, M2]) for (const s of both(r)) s.localOK = true;
+    for (const s of both(OR)) { s.trucky = true; s.density = 0.5; }
 
-    // ---- the wider network: three more destinations, six more highways (3, 4 and 5 lanes each way)
-    const AU = this.road('Aurora Way', P([[-16000, 500], [-16000, -1500], [-16100, -3500], [-15700, -6000], [-15900, -8500], [-15500, -11000], [-15000, -12500], [-15000, -13500]]), 4, 4);
-    const HR = this.road('Harbor Run', P([[-14000, -14500], [-12500, -14500], [-10500, -15200], [-8000, -15500], [-5500, -15200], [-3000, -15800], [-1500, -16000], [-100, -16000]]), 3, 3);
-    const FL = this.road('Frost Line', P([[1900, -16000], [3600, -16000], [6000, -15600], [8500, -15000], [10500, -14400], [12200, -14100], [14000, -14000]]), 3, 3);
-    const IR = this.road('Ice Road', P([[15000, -13000], [15000, -11000], [15500, -9000], [15200, -7000], [15700, -5000], [16000, -3500], [16000, -2000]]), 3, 3);
-    const SH = this.road('Slag Highway', P([[-1000, 16000], [-2500, 16000], [-5000, 16500], [-7500, 16000], [-10000, 15500], [-12000, 15000], [-13500, 15000]]), 4, 4);
-    const CR = this.road('Cinder Road', P([[-14500, 14000], [-14500, 12000], [-15000, 10000], [-14800, 8000], [-15600, 6000], [-15900, 4500], [-16000, 2500]]), 3, 3);
+    // ---- the wider network: three more destinations, six more highways with 2, 3 and 4 lane sections
+    const AU = this.road('Aurora Way', P([[-16000, 500], [-16000, -1500], [-16100, -3500], [-15700, -6000], [-15900, -8500], [-15500, -11000], [-15000, -12500], [-15000, -13500]]),
+      [[0.35, 3], [0.7, 4], [1, 3]], [[0.4, 3], [0.765, 4], [1, 3]]);
+    const HR = this.road('Harbor Run', P([[-14000, -14500], [-12500, -14500], [-10500, -15200], [-8000, -15500], [-5500, -15200], [-3000, -15800], [-1500, -16000], [-100, -16000]]),
+      [[0.58, 3], [1, 4]], [[0.52, 4], [1, 3]]);
+    const FL = this.road('Frost Line', P([[1900, -16000], [3600, -16000], [6000, -15600], [8500, -15000], [10500, -14400], [12200, -14100], [14000, -14000]]),
+      [[0.643, 3], [1, 2]], [[0.42, 2], [1, 3]]);
+    const IR = this.road('Ice Road', P([[15000, -13000], [15000, -11000], [15500, -9000], [15200, -7000], [15700, -5000], [16000, -3500], [16000, -2000]]),
+      [[0.373, 3], [0.65, 2], [1, 3]], [[0.25, 2], [1, 3]]);
+    const SH = this.road('Slag Highway', P([[-1000, 16000], [-2500, 16000], [-5000, 16500], [-7500, 16000], [-10000, 15500], [-12000, 15000], [-13500, 15000]]),
+      [[0.38, 4], [0.702, 3], [1, 4]], [[0.49, 3], [1, 4]]);
+    const CR = this.road('Cinder Road', P([[-14500, 14000], [-14500, 12000], [-15000, 10000], [-14800, 8000], [-15600, 6000], [-15900, 4500], [-16000, 2500]]),
+      [[0.675, 3], [1, 2]], [[0.45, 2], [1, 3]]);
     this.gates(AU, terra, harbor, 1.7);
     this.gates(HR, harbor, kestrel, 2.6);
     this.gates(FL, kestrel, glacier, 2.8);
     this.gates(IR, glacier, jove, 4.2);
     this.gates(SH, vesta, ember, 1.8);
     this.gates(CR, ember, terra, 4.2);
-    for (const r of [AU, HR, FL, SH]) r.f.localOK = r.r.localOK = true;
-    for (const r of [IR, CR]) { r.f.trucky = r.r.trucky = true; r.f.density = r.r.density = 0.55; }
+    for (const r of [AU, HR, FL, SH]) for (const s of both(r)) s.localOK = true;
+    for (const r of [IR, CR]) for (const s of both(r)) { s.trucky = true; s.density = 0.55; }
 
-    const sAt = (seg: Seg, x: number, y: number) => seg.path.nearest(x, y).s;
+    // the central interchange sits inside the middle (5-lane) sections of M1 and M2
     const A = 520, B = 1320;
+    const E = this.nearestIn(M1.f, 0, 0).seg, W = this.nearestIn(M1.r, 0, 0).seg, S = this.nearestIn(M2.f, 0, 0).seg, N = this.nearestIn(M2.r, 0, 0).seg;
+    const sAt = (seg: Seg, x: number, y: number) => seg.path.nearest(x, y).s;
     const right = { level: 1, limit: 3, kind: 'jct' as const, dir: 'R' as const };
     const left = { limit: 4, kind: 'jct' as const, dir: 'L' as const };
     this.ramp(E, sAt(E, -A, 0), 1, S, sAt(S, 0, A), 1, 0.55, { ...right, label: vesta.name });
@@ -319,63 +391,67 @@ export class Network {
     this.crossing(M1, -12400, 1500, 'Skyport Avenue');
     this.crossing(M2, 900, -12400, 'Dockside Avenue');
 
-    // services, lay-bys, U-turns, speed checks
-    const Lr = (seg: Seg) => seg.len;
-    this.servicesAt(E, 5200, 4, 'Nebula Services');
-    this.laybyAt(E, 8000);
-    this.laybyAt(E, 18500);
-    this.uturn(E, 10200, W, terra.name);
-    this.uturn(E, 22000, W, terra.name);
-    this.laybyAt(E, 25500);
+    // services, lay-bys, U-turns, speed checks (distances are along the whole carriageway)
+    const svc = (segs: Seg[], s: number, pumps: number, name: string) => { const l = this.locate(segs, s); this.servicesAt(l.seg, l.s, pumps, name); };
+    const lay = (segs: Seg[], s: number) => { const l = this.locate(segs, s); this.laybyAt(l.seg, l.s); };
+    const utn = (segs: Seg[], s: number, back: Seg[], label: string) => { const l = this.locate(segs, s); this.uturn(l.seg, l.s, back, label); };
+    const cam = (segs: Seg[], s: number) => {
+      const l = this.locate(segs, s), seg = l.seg;
+      const p = seg.path.at(l.s, seg.laneLat(seg.lanes) + 60);
+      this.cameras.push({ seg, s: l.s, x: p.x, y: p.y });
+      this.signs.push({ ...this.place(seg, l.s - 800), kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
+    };
+    svc(M1.f, 5200, 4, 'Nebula Services');
+    lay(M1.f, 8000);
+    lay(M1.f, 18500);
+    utn(M1.f, 10200, M1.r, terra.name);
+    utn(M1.f, 22000, M1.r, terra.name);
+    lay(M1.f, 25500);
 
-    this.laybyAt(W, 4200);
-    this.laybyAt(W, 13000);
-    this.uturn(W, 7400, E, jove.name);
-    this.uturn(W, 19500, E, jove.name);
-    this.laybyAt(W, 22000);
-    this.servicesAt(W, 24300, 4, 'Orion Rest');
+    lay(M1.r, 4200);
+    lay(M1.r, 13000);
+    utn(M1.r, 7400, M1.f, jove.name);
+    utn(M1.r, 19500, M1.f, jove.name);
+    lay(M1.r, 22000);
+    svc(M1.r, 24300, 4, 'Orion Rest');
 
-    this.servicesAt(S, 5400, 2, 'Comet Fuel');
-    this.laybyAt(S, 8200);
-    this.laybyAt(S, 18500);
-    this.uturn(S, 10300, N, kestrel.name);
-    this.uturn(S, 22200, N, kestrel.name);
-    this.laybyAt(S, 25200);
-    this.servicesAt(S, 27000, 2, 'Rocky Fuel');
+    svc(M2.f, 5400, 2, 'Comet Fuel');
+    lay(M2.f, 8200);
+    lay(M2.f, 18500);
+    utn(M2.f, 10300, M2.r, kestrel.name);
+    utn(M2.f, 22200, M2.r, kestrel.name);
+    lay(M2.f, 25200);
+    svc(M2.f, 27000, 2, 'Rocky Fuel');
 
-    this.servicesAt(N, 2600, 2, 'Crater Fuel');
-    this.laybyAt(N, 5600);
-    this.laybyAt(N, 17000);
-    this.uturn(N, 8000, S, vesta.name);
-    this.uturn(N, 19700, S, vesta.name);
-    this.laybyAt(N, 22400);
-    this.servicesAt(N, Lr(N) - 6200, 2, 'Halo Fuel');
+    svc(M2.r, 2600, 2, 'Crater Fuel');
+    lay(M2.r, 5600);
+    lay(M2.r, 17000);
+    utn(M2.r, 8000, M2.f, vesta.name);
+    utn(M2.r, 19700, M2.f, vesta.name);
+    lay(M2.r, 22400);
+    svc(M2.r, M2.rLen - 6200, 2, 'Halo Fuel');
 
-    this.servicesAt(OR.f, 9000, 2, 'Ore Pit Stop');
-    this.laybyAt(OR.f, 4000);
-    this.laybyAt(OR.f, 15000);
-    this.laybyAt(OR.r, 6000);
-    this.laybyAt(OR.r, 17000);
-    this.servicesAt(OR.r, 12000, 2, 'Quarry Fuel');
+    svc(OR.f, 9000, 2, 'Ore Pit Stop');
+    lay(OR.f, 4000);
+    lay(OR.f, 15000);
+    lay(OR.r, 6000);
+    lay(OR.r, 17000);
+    svc(OR.r, 12000, 2, 'Quarry Fuel');
 
-    const furnish = (rd: { f: Seg; r: Seg }, from: Station, to: Station, names: [string, string], pumps: [number, number]) => {
-      const L = rd.f.len;
+    const furnish = (rd: Road, from: Station, to: Station, names: [string, string], pumps: [number, number]) => {
+      const L = rd.fLen;
       const q = (x: number) => Math.round((L * x) / 100) * 100;
-      this.uturn(rd.f, q(0.82), rd.r, from.name);
-      this.uturn(rd.r, q(0.82), rd.f, to.name);
-      this.laybyAt(rd.f, q(0.1));
-      this.laybyAt(rd.f, q(0.25));
-      this.servicesAt(rd.f, q(0.45), pumps[0], names[0]);
-      this.laybyAt(rd.r, q(0.12));
-      this.laybyAt(rd.r, q(0.32));
-      this.servicesAt(rd.r, q(0.6), pumps[1], names[1]);
-      this.laybyAt(rd.r, q(0.75));
-      for (const [seg, f] of [[rd.f, 0.62], [rd.r, 0.5]] as [Seg, number][]) {
-        const s = q(f);
-        const p = seg.path.at(s, seg.laneLat(seg.lanes) + 60);
-        this.cameras.push({ seg, s, x: p.x, y: p.y });
-        this.signs.push({ seg, s: s - 800, kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
-      }
+      utn(rd.f, q(0.82), rd.r, from.name);
+      utn(rd.r, q(0.82), rd.f, to.name);
+      lay(rd.f, q(0.1));
+      lay(rd.f, q(0.25));
+      svc(rd.f, q(0.45), pumps[0], names[0]);
+      lay(rd.r, q(0.12));
+      lay(rd.r, q(0.32));
+      svc(rd.r, q(0.6), pumps[1], names[1]);
+      lay(rd.r, q(0.75));
+      cam(rd.f, q(0.62));
+      cam(rd.r, q(0.5));
     };
     furnish(AU, terra, harbor, ['Aurora Fuel', 'Skyline Stop'], [3, 2]);
     furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3]);
@@ -384,16 +460,13 @@ export class Network {
     furnish(SH, vesta, ember, ['Slag Services', 'Furnace Fuel'], [3, 3]);
     furnish(CR, ember, terra, ['Cinder Stop', 'Ashfall Fuel'], [2, 2]);
 
-    for (const [seg, s] of [[E, 19300], [W, 11300], [S, 19400], [N, 11200]] as [Seg, number][]) {
-      const p = seg.path.at(s, seg.laneLat(seg.lanes) + 60);
-      this.cameras.push({ seg, s, x: p.x, y: p.y });
-      this.signs.push({ seg, s: s - 800, kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
-    }
+    cam(M1.f, 19300); cam(M1.r, 11300); cam(M2.f, 19400); cam(M2.r, 11200);
 
     // welcome / route confirmation gantries at departures
     for (const st of this.stations) for (const seg of st.dep) {
-      const dest = seg.arrStation!;
-      this.signs.push({ seg, s: 380, kind: 'gantry', side: 1, panels: [{ side: 'C', color: GREEN, title: seg.road === 'M1' || seg.road === 'M2' ? seg.name : dest.name, sub: seg.road === 'M1' || seg.road === 'M2' ? `${dest.name}  ${dist(seg.len)}` : `${seg.road}  ${dist(seg.len)}`, arrow: 0 }] });
+      let last = seg, total = seg.len; while (last.next) { last = last.next; total += last.len; }
+      const dest = last.arrStation!;
+      this.signs.push({ seg, s: 380, kind: 'gantry', side: 1, panels: [{ side: 'C', color: GREEN, title: seg.road === 'M1' || seg.road === 'M2' ? seg.name : dest.name, sub: seg.road === 'M1' || seg.road === 'M2' ? `${dest.name}  ${dist(total)}` : `${seg.road}  ${dist(total)}`, arrow: 0 }] });
     }
 
     // turning around by docking at a station (router only — never applied automatically)
@@ -428,8 +501,14 @@ export class Network {
   }
 
   private validate() {
-    for (const seg of this.segs) for (const a of seg.aux) for (const b of seg.aux) {
-      if (a !== b && a.side === b.side && a.s0 < b.s1 + 60 && b.s0 < a.s1 + 60) console.warn('aux overlap', seg.name, a.type, a.s0 | 0, b.type, b.s0 | 0);
+    for (const seg of this.segs) {
+      for (const a of seg.aux) for (const b of seg.aux) {
+        if (a !== b && a.side === b.side && a.s0 < b.s1 + 60 && b.s0 < a.s1 + 60) console.warn('aux overlap', seg.name, a.type, a.s0 | 0, b.type, b.s0 | 0);
+      }
+      // section joins must not cut through slip roads, lay-bys, signals or lane tapers
+      const lo = seg.gain ? TAPER : 0, hi = seg.len - (seg.drop ? TAPER : 0);
+      for (const a of seg.aux) if (a.s0 < lo + 60 || a.s1 > hi - 60) console.warn('aux crosses section join', seg.name, a.type, a.s0 | 0, a.s1 | 0, seg.len | 0);
+      for (const st of seg.stops) if (st.s < lo + 300 || st.s > hi - 300) console.warn('signal near section join', seg.name, st.s | 0, seg.len | 0);
     }
   }
 

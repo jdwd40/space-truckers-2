@@ -24,11 +24,18 @@ export interface IncHooks {
   bump(fee: number, atFault: boolean, other: Veh, saved: boolean): void;
 }
 
+/** Incident tuning: seconds between breakdown/accident attempts, cap on simultaneous AI incidents, seconds between police stops. */
+export const INC_CFG = {
+  interval: [18, 34] as [number, number],
+  maxActive: 5,
+  stopInterval: [8, 16] as [number, number],
+};
+
 export class Incidents {
   list: Incident[] = [];
   nextId = 1;
-  spawnT = 20;
-  stopT = 16;
+  spawnT = 14;
+  stopT = 12;
   constructor(public net: Network, public tr: Traffic, public hooks: IncHooks) {
     tr.onCollide = (a, b, rv) => this.collision(a, b, rv);
   }
@@ -37,9 +44,9 @@ export class Incidents {
   update(dt: number, active: boolean) {
     if (active) {
       this.spawnT -= dt;
-      if (this.spawnT <= 0) { this.spawnT = rand(34, 60); this.trySpawn(); }
+      if (this.spawnT <= 0) { this.spawnT = rand(INC_CFG.interval[0], INC_CFG.interval[1]); this.trySpawn(); }
       this.stopT -= dt;
-      if (this.stopT <= 0) { this.stopT = rand(10, 20); this.tryTrafficStop(); }
+      if (this.stopT <= 0) { this.stopT = rand(INC_CFG.stopInterval[0], INC_CFG.stopInterval[1]); this.tryTrafficStop(); }
     }
     for (const inc of this.list) this.step(inc, dt);
     this.list = this.list.filter((i) => !i.done);
@@ -158,7 +165,8 @@ export class Incidents {
   }
 
   clearStretch(seg: Seg, a: number, b: number): boolean {
-    for (const z of seg.aux) if (z.s1 > a && z.s0 < b) return false;
+    // keep clear of slip roads; merging traffic needs the edge lane open for a while after a merge lane ends
+    for (const z of seg.aux) if ((z.type === 'merge' ? z.s1 + 1200 : z.s1) > a && z.s0 < b) return false;
     for (const st of seg.stops) if (st.s > a && st.s < b) return false;
     return true;
   }
@@ -172,7 +180,7 @@ export class Incidents {
       const s = p.s + rand(2500, 5000);
       if (s > seg.len - 2500) return false;
       if (!this.clearStretch(seg, s - 500, s + 500)) continue;
-      const lane = Math.floor(rand(0, seg.lanes));
+      const lane = Math.floor(rand(0, seg.lanes - (seg.drop && s > seg.len - 2600 ? seg.drop : 0)));
       const v = tr.spawnNPC(seg, s, false, lane, pick(['mite', 'taxi', 'pod', 'van', 'rig', 'tanker', 'long', 'bus'] as const));
       if (!v) continue;
       v.age = 8;
@@ -196,7 +204,7 @@ export class Incidents {
 
   private trySpawn() {
     const tr = this.tr, p = tr.player;
-    if (this.list.filter((i) => !i.withPlayer && !i.done).length >= 3) return;
+    if (this.list.filter((i) => !i.withPlayer && !i.done).length >= INC_CFG.maxActive) return;
     if (Math.random() < 0.7 && this.spawnAhead()) return;
     const cands: Veh[] = [];
     for (const v of tr.vs) {
