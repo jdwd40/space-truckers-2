@@ -67,8 +67,14 @@ export class Baker {
     tex.camera.centerOn(src.x + (box.x0 + box.x1) / 2, src.y + (box.y0 + box.y1) / 2);
     tex.draw(src);
     src.setRotation(rot).setScale(sx, sy);
+    // The texture is w×h texels (rounded up from the box), so it covers tw×th world units centred on the box centre.
+    // The image's origin must be where the source's own origin sits inside that texture: using the unrounded box
+    // width here shifts the image by (tw - bw) × x0 / bw, which for road chunks drawn at world coordinates
+    // (x0 in the tens of thousands) is a visible gap between neighbouring chunks.
+    // Phaser rounds dynamic textures up to even sizes, so read the size it actually made rather than the one asked for.
+    const tw = tex.width / S, th = tex.height / S, cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
     const img = this.scene.add.image(src.x, src.y, b.key)
-      .setOrigin(-box.x0 / bw, -box.y0 / bh)
+      .setOrigin(0.5 - cx / tw, 0.5 - cy / th)
       .setScale(sx / S, sy / S)
       .setRotation(rot)
       .setDepth(b.depth)
