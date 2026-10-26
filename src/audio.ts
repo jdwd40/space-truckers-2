@@ -7,6 +7,8 @@ export class Sfx {
   engFilter!: BiquadFilterNode;
   padGain!: GainNode;
   padFilter!: BiquadFilterNode;
+  /** multiplier on the ambient pad level: the radio halves it while a station plays */
+  padDuck = 1;
   muted = false;
   private tickT = 0;
   private sirenOn = 0;
@@ -40,7 +42,7 @@ export class Sfx {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.padFilter.frequency.setTargetAtTime(cutoff, t, 1.5);
-    this.padGain.gain.setTargetAtTime(gain, t, 1.5);
+    this.padGain.gain.setTargetAtTime(gain * this.padDuck, t, 1.5);
   }
   setMuted(m: boolean) { this.muted = m; if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.8, this.ctx.currentTime, 0.05); }
 

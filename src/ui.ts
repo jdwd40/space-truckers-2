@@ -5,6 +5,7 @@ import { Station } from './network';
 import { clamp } from './geom';
 import { sfx } from './audio';
 import { ZoneDef } from './zones';
+import { radio } from './radio';
 
 const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const PANEL = 0x111a33, EDGE = 0x3c5a9a, CYAN = 0x5ad8ff;
@@ -38,11 +39,16 @@ export class UIScene extends Phaser.Scene {
   // "Entering <zone>" title card: shown when driving, queued otherwise, never repeated for the same zone within 60 s
   zoneCard!: Phaser.GameObjects.Container; zoneName!: Phaser.GameObjects.Text; zoneTag!: Phaser.GameObjects.Text;
   zoneCardT = -1; zoneCardZone: ZoneDef | null = null; pendingZone: ZoneDef | null = null; zoneShownAt: Record<string, number> = {};
+  // trucker radio panel under the fuel gauge
+  radioG!: Phaser.GameObjects.Graphics; radioT!: Phaser.GameObjects.Text; radioHint!: Phaser.GameObjects.Text; radioCap!: Phaser.GameObjects.Text; radioVol!: Phaser.GameObjects.Graphics;
 
   constructor() { super('ui'); }
 
   create() {
     this.world = this.scene.get('world') as unknown as WorldScene;
+    radio.world = this.world;
+    // dev only: poke the radio from the console, e.g. `__radio.next()`
+    if (import.meta.env.DEV) (window as any).__radio = radio;
     this.build();
     this.scale.on('resize', () => this.time.delayedCall(30, () => this.build()));
     bus.on('toast', (m: string, c: string, d: number) => this.showToast(m, c, d));
@@ -71,8 +77,14 @@ export class UIScene extends Phaser.Scene {
     else if (k === 's' || k === 'arrowdown') { if (G.speedSet <= 1) bus.emit('brake'); else bus.emit('speed', G.speedSet - 1); }
     else if (k === 'm') this.toggleMute();
     else if (k === 'e') bus.emit('act');
+    // radio: R / Q change station (E is taken by favours), - and + volume, V DJ voice
+    else if (k === 'r') { sfx.init(); radio.start(); radio.next(); }
+    else if (k === 'q') { sfx.init(); radio.start(); radio.prev(); }
+    else if (k === '-' || k === '_') radio.setVolume(radio.volume - 1);
+    else if (k === '=' || k === '+') radio.setVolume(radio.volume + 1);
+    else if (k === 'v') { radio.toggleVoice(); toast(radio.voiceOn ? 'DJ voice on' : 'DJ voice off', '#9fe9ff', 1500); }
   }
-  private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; }
+  private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; if (G.muted) radio.cancelSpeech(); }
   // ------------------------------------------------------------------ pause
   /** freeze gameplay (the world scene skips its update while G.paused) and show the pause menu; call again to resume */
   togglePause() {
@@ -88,6 +100,7 @@ export class UIScene extends Phaser.Scene {
     const b = this.btn(W / 2, H * 0.36 + 130 * u, 280 * u, 62 * u, 'Resume', 24, () => this.togglePause(), 0x1f8a5a, 0x7ff0c0);
     c.add(b.c);
     c.add(this.txt(W / 2, H * 0.36 + 190 * u, 'Esc or P to resume', 15, '#8fa6d8', false, [0.5, 0.5]));
+    c.add(this.txt(W / 2, H * 0.36 + 214 * u, 'R / Q radio station · − / + volume · V DJ voice · M mute', 13, '#8fa6d8', false, [0.5, 0.5]));
   }
 
   // ------------------------------------------------------------------ helpers
@@ -143,6 +156,17 @@ export class UIScene extends Phaser.Scene {
     this.fuelT = this.txt(W - 26 * u, 22 * u, '', 13, '#bcd2ff', true, [1, 0]); R.add(this.fuelT);
     this.muteBtn = this.btn(W - 300 * u, 43 * u, 52 * u, 52 * u, '♪', 22, () => this.toggleMute()); R.add(this.muteBtn.c);
     const pb = this.btn(W - 360 * u, 43 * u, 52 * u, 52 * u, 'II', 20, () => this.togglePause()); R.add(pb.c);
+    // trucker radio
+    this.radioG = this.add.graphics(); R.add(this.radioG);
+    this.drawRadioPanel(0);
+    R.add(this.txt(W - 250 * u, 90 * u, '📻', 15, '#ffffff', false));
+    this.radioT = this.txt(W - 222 * u, 88 * u, '', 13, '#ffe27a'); R.add(this.radioT);
+    this.radioVol = this.add.graphics(); R.add(this.radioVol);
+    this.radioHint = this.txt(W - 222 * u, 108 * u, 'R station · −/+ vol · V voice', 10, '#8fa6d8', false); R.add(this.radioHint);
+    this.radioCap = this.txt(W - 250 * u, 128 * u, '', 12, '#e6eeff', false); this.radioCap.setWordWrapWidth(230 * u).setLineSpacing(2 * u); this.radioCap.setVisible(false); R.add(this.radioCap);
+    const rz = this.add.zone(W - 264 * u, 80 * u, 250 * u, 46 * u).setOrigin(0).setInteractive();
+    rz.on('pointerdown', (_p: unknown, _x: unknown, _y: unknown, ev: Phaser.Types.Input.EventData) => { ev?.stopPropagation?.(); sfx.init(); radio.start(); radio.next(); });
+    R.add(rz);
     // speed bar
     const by = H - 52 * u;
     const bw = 62 * u, bh = 58 * u, gap = 8 * u;
@@ -241,6 +265,14 @@ export class UIScene extends Phaser.Scene {
     if (this.modal) this.children.bringToTop(this.modal);
   }
 
+  /** the radio panel grows downwards while a caption is showing */
+  private drawRadioPanel(extra: number) {
+    const u = this.u, W = this.scale.width, g = this.radioG; g.clear();
+    const x = W - 264 * u, y = 80 * u, w = 250 * u, h = 46 * u + extra;
+    g.fillStyle(0x000000, 0.25); g.fillRoundedRect(x + 3 * u, y + 4 * u, w, h, 12 * u);
+    g.fillStyle(PANEL, 0.88); g.fillRoundedRect(x, y, w, h, 12 * u);
+    g.lineStyle(2 * u, EDGE, 0.9); g.strokeRoundedRect(x, y, w, h, 12 * u);
+  }
   private drawFuelIcon(g: Phaser.GameObjects.Graphics, x: number, y: number) {
     const u = this.u;
     g.fillStyle(0x5ad8ff, 1); g.fillRoundedRect(x - 9 * u, y - 13 * u, 15 * u, 26 * u, 3 * u);
@@ -338,6 +370,26 @@ export class UIScene extends Phaser.Scene {
     const w = this.world;
     if (!w.player) return;
     this.updateZoneCard(dt);
+    radio.update(dt);
+    // radio panel: station, volume ticks and the DJ / CB caption
+    const rdk = `${radio.station}:${radio.volume}`;
+    if (this.last.radio !== rdk) {
+      this.last.radio = rdk;
+      this.radioT.setText(radio.stationName()).setColor(radio.station ? '#ffe27a' : '#7f8aa8');
+      if (this.radioT.width > 112 * u) this.radioT.setScale((112 * u) / this.radioT.width); else this.radioT.setScale(1);
+      const g = this.radioVol; g.clear();
+      for (let i = 0; i < 10; i++) { g.fillStyle(i < radio.volume ? 0x5ad8ff : 0x223058, 1); g.fillRoundedRect(W - 102 * u + i * 8 * u, 92 * u, 5 * u, 10 * u, 2 * u); }
+    }
+    const cap = radio.caption;
+    const ck = cap ? `${cap.who}:${cap.call}:${cap.text}` : '';
+    if (this.last.cap !== ck) {
+      this.last.cap = ck;
+      if (cap) {
+        this.radioCap.setText(cap.who === 'cb' ? `${cap.call}: ${cap.text}` : cap.text).setColor(cap.who === 'cb' ? '#9fe9ff' : '#e6eeff').setVisible(true).setAlpha(1);
+        this.drawRadioPanel(this.radioCap.height + 12 * u);
+      } else { this.radioCap.setVisible(false); this.drawRadioPanel(0); }
+    }
+    if (cap) this.radioCap.setAlpha(cap.t > cap.dur ? Math.max(0, 1 - (cap.t - cap.dur) / 0.5) : 1);
     const set = (k: string, v: string, t: Phaser.GameObjects.Text) => { if (this.last[k] !== v) { this.last[k] = v; t.setText(v); } };
     set('money', money(G.money), this.moneyT);
     const rank = rankOf(G.earned);
@@ -522,6 +574,7 @@ export class UIScene extends Phaser.Scene {
   }
   private startGame() {
     sfx.init(); sfx.setMuted(G.muted); sfx.click();
+    radio.start();
     this.closeModal();
     this.world.openFirstBoard();
   }
