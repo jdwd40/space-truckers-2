@@ -169,6 +169,63 @@ export function makeTextures(scene: Phaser.Scene) {
   makeDecor(scene);
   makeStructures(scene);
   makeAsteroids(scene);
+  makeSetPieceTextures(scene);
+}
+
+/** distant background set pieces: soft, desaturated, slightly bluish so they read as far away */
+function makeSetPieceTextures(scene: Phaser.Scene) {
+  const P = (pts: [number, number][]) => pts.map(([x, y]) => new Phaser.Geom.Point(x, y));
+  // space whale, 512 x 220, facing +x
+  {
+    const g = gfx(scene);
+    const BODY = 0x7484a6, DARK = 0x5a6a8c, BELLY = 0xa3b0c8;
+    g.fillStyle(DARK, 1); g.fillTriangle(90, 110, 8, 46, 70, 96); g.fillTriangle(90, 110, 8, 174, 70, 124); // fluke
+    g.fillStyle(DARK, 1); g.fillTriangle(300, 150, 250, 210, 340, 168); g.fillTriangle(300, 70, 250, 10, 340, 52); // pectoral fins
+    g.fillStyle(BODY, 1); g.fillEllipse(130, 110, 170, 70); g.fillEllipse(260, 110, 340, 124); g.fillEllipse(405, 110, 190, 104);
+    g.fillStyle(BELLY, 1); g.fillEllipse(290, 138, 300, 48);
+    g.fillStyle(0x6d7d9c, 1); g.fillEllipse(420, 96, 120, 60);
+    g.fillStyle(0x2a3348, 1); g.fillCircle(448, 92, 6);
+    g.fillStyle(0x8fe3ff, 0.55); for (const [x, y] of [[110, 95], [150, 120], [190, 90], [230, 122], [270, 92], [310, 125], [350, 95], [390, 120], [425, 100]]) g.fillCircle(x, y, 5);
+    g.generateTexture('sp_whale', 512, 220); g.destroy();
+  }
+  // derelict cruiser, 512 x 180, facing +x, broken in the middle
+  {
+    const g = gfx(scene);
+    const HULL = 0x8690a4, DARK = 0x5e6779, PANEL = 0x9aa3b6;
+    g.fillStyle(HULL, 1); g.fillPoints(P([[10, 70], [60, 40], [225, 48], [232, 132], [60, 140], [10, 110]]), true); // aft
+    g.fillStyle(HULL, 1); g.fillPoints(P([[272, 52], [420, 44], [505, 90], [420, 136], [272, 128]]), true); // fore
+    g.fillStyle(DARK, 1); g.fillPoints(P([[232, 70], [255, 64], [252, 112], [232, 118]]), true); g.fillPoints(P([[272, 60], [262, 70], [266, 110], [272, 120]]), true); // torn ends
+    g.fillStyle(PANEL, 1); g.fillRect(80, 62, 110, 18); g.fillRect(300, 60, 90, 16); g.fillRect(330, 104, 70, 14);
+    g.fillStyle(DARK, 1); g.fillRect(30, 84, 40, 12); g.fillRect(440, 80, 50, 20);
+    g.fillStyle(0x2a2f3c, 1); g.fillCircle(150, 110, 11); g.fillCircle(360, 84, 9); g.fillCircle(205, 70, 7); g.fillCircle(300, 110, 6);
+    g.lineStyle(4, DARK, 1); g.lineBetween(240, 86, 268, 92);
+    g.generateTexture('sp_cruiser', 512, 180); g.destroy();
+    for (let i = 0; i < 3; i++) {
+      const d = gfx(scene);
+      d.fillStyle(i === 1 ? DARK : HULL, 1); d.fillPoints(P([[8, 20], [22, 6], [40, 14], [36, 36], [16, 42]]), true);
+      d.fillStyle(0x2a2f3c, 1); d.fillCircle(24, 24, 4);
+      d.generateTexture('sp_debris' + i, 48, 48); d.destroy();
+    }
+  }
+  // ring station, 400 x 400
+  {
+    const g = gfx(scene);
+    g.lineStyle(36, 0x6a7384, 1); g.strokeCircle(200, 200, 160);
+    g.lineStyle(14, 0x8a94a8, 1); g.strokeCircle(200, 200, 168);
+    g.lineStyle(10, 0x5a6376, 1); for (let k = 0; k < 4; k++) { const a = (k / 4) * Math.PI * 2; g.lineBetween(200, 200, 200 + Math.cos(a) * 150, 200 + Math.sin(a) * 150); }
+    g.fillStyle(0x7a8498, 1); g.fillCircle(200, 200, 40); g.fillStyle(0x5a6376, 1); g.fillCircle(200, 200, 22);
+    g.fillStyle(0xcfe8ff, 0.8); for (let k = 0; k < 24; k++) { const a = (k / 24) * Math.PI * 2; g.fillCircle(200 + Math.cos(a) * 160, 200 + Math.sin(a) * 160, 3.5); }
+    g.generateTexture('sp_ring', 400, 400); g.destroy();
+  }
+  // comet head, 64 x 64 (the tail is drawn live)
+  {
+    const g = gfx(scene);
+    g.fillStyle(0xbfefff, 0.15); g.fillCircle(32, 32, 30);
+    g.fillStyle(0xbfefff, 0.35); g.fillCircle(32, 32, 20);
+    g.fillStyle(0xe8fbff, 0.7); g.fillCircle(32, 32, 12);
+    g.fillStyle(0xffffff, 1); g.fillCircle(32, 32, 6);
+    g.generateTexture('sp_comet', 64, 64); g.destroy();
+  }
 }
 
 export function trailerTex(scene: Phaser.Scene, len: number, style: number): string {

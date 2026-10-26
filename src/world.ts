@@ -10,6 +10,7 @@ import { Outposts } from './outposts';
 import { Landmarks } from './scenery';
 import { Favours } from './favours';
 import { ZoneDef, ZoneId, ZONE_BY_ID, ZoneLook, zoneAt, lookOf, lerpLook } from './zones';
+import { SetPieces, PieceKind } from './setpieces';
 
 const STATION_R = 1250;
 const CARGO: Record<string, string[]> = {
@@ -77,6 +78,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   fog: Fog[] = [];
   giant!: Phaser.GameObjects.Image; giantA = 0; gx = 0; gy = 0;
   upcomingT = 0; upcomingCache: { zone: ZoneDef; dist: number } | null = null;
+  setPieces!: SetPieces;
 
   constructor() { super('world'); }
 
@@ -156,6 +158,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.scene.launch('ui');
     // dev only: force a zone from the console, e.g. `__zone('nebula')`
     if (import.meta.env.DEV) (window as any).__zone = (id: ZoneId) => { const z = ZONE_BY_ID[id]; if (z) this.switchZone(z); };
+    // dev only: bring a set piece in right away, e.g. `__setpiece('whale')`
+    if (import.meta.env.DEV) (window as any).__setpiece = (k: PieceKind) => { const cam = this.cameras.main; this.setPieces.spawn(k, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur); };
   }
 
   // ----------------------------------------------------------- scenery
@@ -288,6 +292,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.layer.add(sh); this.layer.add(img);
       this.flyers.push({ img, sh, x: 1e9, y: 1e9, h: 0, v: rand(160, 320), a: 0 });
     }
+    this.setPieces = new SetPieces(this, this.layer);
   }
   private layoutStars() {
     const d = Math.hypot(this.scale.width, this.scale.height) + 40;
@@ -856,6 +861,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.playerLogic(dt, prevS, prevSeg);
     this.updateCamera(dt);
     this.updateZone(dt);
+    this.setPieces.update(dt, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur, this.zone.id, G.mode === 'drive');
     this.updateVisuals(dt);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
     this.inc.draw(this.incG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
