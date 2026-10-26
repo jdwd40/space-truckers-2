@@ -38,13 +38,18 @@ export class UIScene extends Phaser.Scene {
   pendingBoard: { st: Station; jobs: Job[]; summary: any } | null = null;
   // "Entering <zone>" title card: shown when driving, queued otherwise, never repeated for the same zone within 60 s
   zoneCard!: Phaser.GameObjects.Container; zoneName!: Phaser.GameObjects.Text; zoneTag!: Phaser.GameObjects.Text;
-  zoneCardT = -1; zoneCardZone: ZoneDef | null = null; pendingZone: ZoneDef | null = null; zoneShownAt: Record<string, number> = {};
+  // the card runs on the wall clock (not frame deltas, which Phaser smooths and clamps): zoneCardAt is when it opened,
+  // pushed forward while the game is paused so the card freezes with everything else
+  zoneCardAt = -1; zoneCardZone: ZoneDef | null = null; pendingZone: ZoneDef | null = null; zoneShownAt: Record<string, number> = {};
+  wallLast = 0;
   // trucker radio panel under the fuel gauge
   radioG!: Phaser.GameObjects.Graphics; radioT!: Phaser.GameObjects.Text; radioHint!: Phaser.GameObjects.Text; radioCap!: Phaser.GameObjects.Text; radioVol!: Phaser.GameObjects.Graphics;
 
   constructor() { super('ui'); }
 
   create() {
+    // the HUD renders after (above) the world scene whatever depth a world object has; make that explicit
+    this.scene.bringToTop();
     this.world = this.scene.get('world') as unknown as WorldScene;
     radio.world = this.world;
     // dev only: poke the radio from the console, e.g. `__radio.next()`
@@ -261,7 +266,7 @@ export class UIScene extends Phaser.Scene {
     this.zoneName.setStroke('#1c2a52', 6 * u).setShadow(0, 4 * u, '#000000', 8 * u, true, true);
     this.zoneTag = this.txt(0, 48 * u, '', 14, '#bcd2ff', false, [0.5, 0.5]);
     this.zoneCard.add([zg, zl, this.zoneName, this.zoneTag]); this.zoneCard.setVisible(false).setAlpha(0); R.add(this.zoneCard);
-    if (this.zoneCardT >= 0 && this.zoneCardZone) { this.zoneName.setText(this.zoneCardZone.name); this.zoneTag.setText(this.zoneCardZone.tagline); this.zoneCard.setVisible(true); }
+    if (this.zoneCardAt >= 0 && this.zoneCardZone) { this.zoneName.setText(this.zoneCardZone.name); this.zoneTag.setText(this.zoneCardZone.tagline); this.zoneCard.setVisible(true); }
     if (this.modal) this.children.bringToTop(this.modal);
   }
 
@@ -345,23 +350,26 @@ export class UIScene extends Phaser.Scene {
   }
 
   private showZoneCard(z: ZoneDef) {
-    this.zoneCardZone = z; this.zoneCardT = 0;
+    this.zoneCardZone = z; this.zoneCardAt = performance.now();
     this.zoneShownAt[z.id] = this.time.now;
     this.zoneName.setText(z.name); this.zoneTag.setText(z.tagline);
     this.zoneCard.setVisible(true).setAlpha(0);
   }
-  private updateZoneCard(dt: number) {
+  private updateZoneCard() {
+    const now = performance.now(), wallDt = this.wallLast ? now - this.wallLast : 0;
+    this.wallLast = now;
     if (this.pendingZone && G.mode === 'drive' && !this.modal && !G.paused) {
       const z = this.pendingZone; this.pendingZone = null;
       const last = this.zoneShownAt[z.id];
       if (last === undefined || this.time.now - last > 60000) this.showZoneCard(z);
     }
-    if (this.zoneCardT < 0 || G.paused) return;
-    // fade in 0.8 s, hold 2.6 s, fade out 1.2 s
-    const t = this.zoneCardT += dt;
+    if (this.zoneCardAt < 0) return;
+    if (G.paused) { this.zoneCardAt += wallDt; return; }
+    // fade in 0.8 s, hold 2.6 s, fade out 1.2 s, in real seconds
+    const t = (now - this.zoneCardAt) / 1000;
     const a = t < 0.8 ? t / 0.8 : t < 3.4 ? 1 : Math.max(0, 1 - (t - 3.4) / 1.2);
     this.zoneCard.setAlpha(a);
-    if (t >= 4.6) { this.zoneCardT = -1; this.zoneCard.setVisible(false); }
+    if (t >= 4.6) { this.zoneCardAt = -1; this.zoneCard.setVisible(false); }
   }
 
   override update(_t: number, dms: number) {
@@ -369,7 +377,7 @@ export class UIScene extends Phaser.Scene {
     const u = this.u, W = this.scale.width;
     const w = this.world;
     if (!w.player) return;
-    this.updateZoneCard(dt);
+    this.updateZoneCard();
     radio.update(dt);
     // radio panel: station, volume ticks and the DJ / CB caption
     const rdk = `${radio.station}:${radio.volume}`;
