@@ -25,11 +25,11 @@ export class GlowLayer {
   }
   /** a soft radial glow of radius r (the gradient fades to nothing at the edge, so it reads a little wider than a disc) */
   soft(x: number, y: number, r: number, col: number, a: number) {
-    this.next('glow').setPosition(x, y).setScale(r / 28).setRotation(0).setTint(col).setAlpha(a);
+    this.next('glow').setPosition(x, y).setScale(r / 29).setRotation(0).setTint(col).setAlpha(a);
   }
   /** a soft glow stretched into an ellipse with radii rx, ry, turned by rot */
   softEllipse(x: number, y: number, rx: number, ry: number, rot: number, col: number, a: number) {
-    this.next('glow').setPosition(x, y).setScale(rx / 28, ry / 28).setRotation(rot).setTint(col).setAlpha(a);
+    this.next('glow').setPosition(x, y).setScale(rx / 29, ry / 29).setRotation(rot).setTint(col).setAlpha(a);
   }
   /** a solid anti-aliased disc of radius r: the lamp itself rather than its halo */
   dot(x: number, y: number, r: number, col: number, a: number) {
@@ -51,8 +51,8 @@ export function makeGlowTextures(scene: Phaser.Scene) {
   const grad = c.createRadialGradient(32, 32, 0, 32, 32, 32);
   // a soft-edged disc rather than a cone: the halos used to be flat fillCircles, so the core stays near full strength
   grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.55, 'rgba(255,255,255,0.95)');
-  grad.addColorStop(0.8, 'rgba(255,255,255,0.5)');
+  grad.addColorStop(0.7, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.88, 'rgba(255,255,255,0.5)');
   grad.addColorStop(1, 'rgba(255,255,255,0)');
   c.fillStyle = grad; c.fillRect(0, 0, 64, 64);
   g.refresh();

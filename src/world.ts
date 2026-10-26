@@ -124,7 +124,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       // a station is thousands of draw commands: bake it into one texture now and cull it like everything else
       const pad = STATION_R + 500;
       const bb = { x0: st.x - STATION_R - 400, y0: st.y - STATION_R - 400, x1: st.x + STATION_R + 400, y1: st.y + STATION_R + 400 };
-      this.culls.push({ obj: this.baker.add(g, { x0: -pad, y0: -pad, x1: pad, y1: pad }, BAKE.station, true), ...bb });
+      this.culls.push({ obj: this.baker.add(g, { x0: -pad, y0: -pad, x1: pad, y1: pad }, BAKE.station, false), ...bb });
       for (const e of extras) { this.layer.add(e); this.culls.push({ obj: e as unknown as Cullable['obj'], ...bb }); }
       for (const seg of st.arr) this.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
     }

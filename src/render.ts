@@ -6,7 +6,7 @@ import type { Baker, Box } from './bake';
 
 export interface Cullable { obj: { setVisible(v: boolean): unknown }; x0: number; y0: number; x1: number; y1: number }
 /** texels per world unit when static scenery is baked into textures: fine enough for the camera's closest zoom */
-export const BAKE = { station: 0.5, road: 1.5, decor: 1.5, sign: 2 };
+export const BAKE = { station: 1, road: 1.5, decor: 1.5, sign: 2 };
 
 const ASPH = 0x3a4153, RIM = 0xa9b3c8, SHOULDER = 0x30364a, NEON = 0x5ad8ff;
 export const DEPTH = { road: (l: number) => 5 + l * 3, veh: (l: number) => 6 + l * 3, sign: 7.6, station: 17, fxTop: 18 };

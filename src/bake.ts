@@ -34,8 +34,8 @@ export class Baked {
 export class Baker {
   items: Baked[] = [];
   private sweepT = 0;
-  /** how many bakes happened, for the dev console */
-  bakes = 0;
+  /** how many bakes happened and the slowest one, for the dev console */
+  bakes = 0; maxBakeMs = 0; lastBakeMs = 0;
   constructor(private scene: Phaser.Scene, private layer: Phaser.GameObjects.Layer) {}
 
   /**
@@ -56,6 +56,7 @@ export class Baker {
     const S = b.scale, box = b.box;
     const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
     const w = Math.max(2, Math.ceil(bw * S)), h = Math.max(2, Math.ceil(bh * S));
+    const t0 = performance.now();
     b.key = 'bake' + nextKey++;
     const tex = this.scene.textures.addDynamicTexture(b.key, w, h);
     if (!tex) return;
@@ -76,6 +77,8 @@ export class Baker {
     this.layer.add(img);
     b.img = img;
     this.bakes++;
+    this.lastBakeMs = performance.now() - t0;
+    if (this.lastBakeMs > this.maxBakeMs) this.maxBakeMs = this.lastBakeMs;
     if (b.permanent) { src.destroy(); b.src = null; }
   }
 
