@@ -9,6 +9,7 @@ import { Incidents, Incident } from './incidents';
 import { Outposts } from './outposts';
 import { Landmarks } from './scenery';
 import { Favours } from './favours';
+import { ZoneDef, ZoneId, ZONE_BY_ID, ZoneLook, zoneAt, lookOf, lerpLook } from './zones';
 
 const STATION_R = 1250;
 const CARGO: Record<string, string[]> = {
@@ -27,6 +28,8 @@ export interface NavInfo { title: string; sub: string; dist: number; arrow: numb
 interface Vis { units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
 /** ambient high-altitude ship; `a` is its target alpha (0 while it is over a road or station) */
 interface Flyer { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; x: number; y: number; h: number; v: number; a: number }
+/** one drifting puff of zone fog */
+interface Fog { img: Phaser.GameObjects.Image; vx: number; vy: number; spin: number; k: number }
 
 export class WorldScene extends Phaser.Scene implements PlayerCtl {
   net!: Network;
@@ -66,6 +69,14 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   armed: import('./network').Aux | null = null;
   outposts!: Outposts; decoG!: Phaser.GameObjects.Graphics;
   landmarks!: Landmarks; landG!: Phaser.GameObjects.Graphics; favours!: Favours;
+  // zones: the region the rig is in, the look on screen right now and the crossfade from the previous one
+  zone: ZoneDef = ZONE_BY_ID.open;
+  zoneBlend = 1; zoneFrom: ZoneLook = lookOf(ZONE_BY_ID.open); zoneCur: ZoneLook = lookOf(ZONE_BY_ID.open);
+  zoneCand: ZoneDef | null = null; zoneCandT = 0; ambientT = 0;
+  wash!: Phaser.GameObjects.Image; washBase = 1;
+  fog: Fog[] = [];
+  giant!: Phaser.GameObjects.Image; giantA = 0; gx = 0; gy = 0;
+  upcomingT = 0; upcomingCache: { zone: ZoneDef; dist: number } | null = null;
 
   constructor() { super('world'); }
 
@@ -143,6 +154,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.scale.on('resize', () => this.layoutStars());
     this.layoutStars();
     this.scene.launch('ui');
+    // dev only: force a zone from the console, e.g. `__zone('nebula')`
+    if (import.meta.env.DEV) (window as any).__zone = (id: ZoneId) => { const z = ZONE_BY_ID[id]; if (z) this.switchZone(z); };
   }
 
   // ----------------------------------------------------------- scenery
@@ -150,6 +163,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const diag = 2600;
     this.stars = this.add.tileSprite(0, 0, diag, diag, 'stars').setScrollFactor(0).setDepth(0);
     this.layer.add(this.stars);
+    // zone wash: a screen-covering tinted square just above the stars (the star texture is opaque, so the camera
+    // background colour never shows; this is how the sky changes colour)
+    if (!this.textures.exists('white4')) { const g = this.make.graphics({ x: 0, y: 0 }, false); g.fillStyle(0xffffff, 1); g.fillRect(0, 0, 4, 4); g.generateTexture('white4', 4, 4); g.destroy(); }
+    this.wash = this.add.image(0, 0, 'white4').setScrollFactor(0).setDepth(0.2).setAlpha(0).setOrigin(0.5);
+    this.layer.add(this.wash);
     const neb = [[0x6a3cc9, -8000, -6000], [0x1d6fb8, 6000, -3000], [0xb04aa8, -4000, 7000], [0x2a8f9e, 9000, 8000], [0x5a3cc9, -14000, 9000], [0x3a5fd0, 3000, 12000], [0x7a3cb9, 12000, -11000], [0x2e6fb0, -12000, -11000], [0x9a3c99, 0, -4000], [0x2a7fae, -6000, 2000], [0x6a3cc9, 16000, 6000], [0x3a4fd0, -18000, -3000]];
     for (const [c, x, y] of neb) {
       const im = this.add.image(x, y, 'nebula').setTint(c).setScale(rand(30, 48)).setAlpha(0.55).setBlendMode(Phaser.BlendModes.ADD).setDepth(0.5).setRotation(rand(0, 6));
@@ -176,6 +194,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     planet('pl_moon3', 'moon', -2600, -17400, 900);
     planet('pl_ice', 'ice', 21800, -17500, 2600);
     planet('pl_ember', 'ember', -21500, 17800, 2800);
+    // zone fog: a small pool of soft puffs kept around the camera, hidden while the zone has no fog
+    for (let i = 0; i < 6; i++) {
+      const img = this.add.image(1e9, 1e9, 'nebula').setDepth(0.6).setBlendMode(Phaser.BlendModes.ADD).setScale(rand(14, 22)).setRotation(rand(0, 6)).setVisible(false);
+      this.layer.add(img);
+      const a = rand(0, Math.PI * 2), v = rand(8, 20);
+      this.fog.push({ img, vx: Math.cos(a) * v, vy: Math.sin(a) * v, spin: rand(-0.01, 0.01), k: rand(0.6, 1) });
+    }
+    // gas giant close-up for the Jove approach: a huge planet limb that fills one side of the sky
+    this.giant = this.add.image(0, 0, 'pl_jove').setDepth(0.65).setAlpha(0).setVisible(false);
+    this.layer.add(this.giant);
     // asteroid fields away from roads
     const occ = new Set<string>();
     const C = 250;
@@ -266,6 +294,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.stars.setSize(d, d);
     this.stars.setPosition(this.scale.width / 2, this.scale.height / 2);
     this.stars.setOrigin(0.5);
+    this.washBase = d / 4;
+    this.wash.setPosition(this.scale.width / 2, this.scale.height / 2).setScale(this.washBase / this.zoomCur);
   }
 
   // ----------------------------------------------------------- sat-nav map
@@ -312,6 +342,78 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
     const end = pts[pts.length - 1];
     g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, 320); g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, 140);
+  }
+
+  // ----------------------------------------------------------- zones
+  /** start the crossfade into z from whatever is on screen right now (so a switch mid-fade stays smooth) */
+  private switchZone(z: ZoneDef) {
+    if (z === this.zone) return;
+    this.zoneFrom = { ...this.zoneCur };
+    this.zone = z; this.zoneBlend = 0; this.zoneCand = null; this.zoneCandT = 0;
+    this.upcomingT = 0;
+    if (z.id === 'giant') {
+      // park the planet about 1.1 view radii to one side; it drifts only a little (parallax 0.1) as the rig drives
+      const cam = this.cameras.main, cx = cam.midPoint.x, cy = cam.midPoint.y;
+      const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
+      const a = rand(0, Math.PI * 2);
+      this.gx = cx * 0.1 + Math.cos(a) * viewR * 1.1; this.gy = cy * 0.1 + Math.sin(a) * viewR * 1.1;
+      this.giant.setScale((viewR * 0.9) / 500).setRotation(rand(0, 6));
+    }
+    bus.emit('zone', z);
+  }
+  private updateZone(dt: number) {
+    const p = this.player, cam = this.cameras.main;
+    // hysteresis: a candidate has to stay different for 2.5 s before we switch, so a border never flickers
+    const cand = zoneAt(p.x, p.y);
+    if (cand !== this.zone) {
+      if (cand === this.zoneCand) this.zoneCandT += dt; else { this.zoneCand = cand; this.zoneCandT = 0; }
+      if (this.zoneCandT >= 2.5) this.switchZone(cand);
+    } else { this.zoneCand = null; this.zoneCandT = 0; }
+    // 6 s crossfade, eased
+    this.zoneBlend = Math.min(1, this.zoneBlend + dt / 6);
+    const b = this.zoneBlend, t = b * b * (3 - 2 * b);
+    const cur = this.zoneCur = lerpLook(this.zoneFrom, lookOf(this.zone), t);
+    this.wash.setTint(cur.wash).setAlpha(cur.washAlpha);
+    this.stars.setTint(cur.starTint);
+    // fog puffs drift around the camera and are recycled to the far side of the view when they fall behind
+    const cx = cam.midPoint.x, cy = cam.midPoint.y;
+    const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
+    if (cur.fogAlpha < 0.003) { for (const f of this.fog) if (f.img.visible) f.img.setVisible(false); }
+    else for (const f of this.fog) {
+      const im = f.img;
+      if (!im.visible) { im.setVisible(true); im.x = 1e9; }
+      if (Math.hypot(im.x - cx, im.y - cy) > viewR + 1500) {
+        const a = rand(0, Math.PI * 2), d = viewR * rand(0.2, 1.2);
+        im.setPosition(cx + Math.cos(a) * d, cy + Math.sin(a) * d);
+      }
+      im.x += f.vx * dt; im.y += f.vy * dt; im.rotation += f.spin * dt;
+      im.setTint(cur.fog).setAlpha(cur.fogAlpha * f.k);
+    }
+    // the Jove close-up fades with the blend while the zone is 'giant' and away again afterwards
+    const ga = this.zone.id === 'giant' ? t : 0;
+    this.giantA += (ga - this.giantA) * Math.min(1, dt / 2);
+    if (this.giantA < 0.005 && this.zone.id !== 'giant') { if (this.giant.visible) this.giant.setVisible(false).setAlpha(0); }
+    else this.giant.setVisible(true).setAlpha(this.giantA).setPosition(this.gx + cx * 0.9, this.gy + cy * 0.9);
+    // ambient pad, at most twice a second
+    this.ambientT -= dt;
+    if (this.ambientT <= 0) { this.ambientT = 0.5; sfx.setAmbient(cur.padCutoff, cur.padGain); }
+  }
+  /** the next different zone along the route (or straight ahead), within 12 km; cached for 3 s */
+  upcomingZone(): { zone: ZoneDef; dist: number } | null {
+    if (this.upcomingT > 0) return this.upcomingCache;
+    this.upcomingT = 3;
+    const p = this.player;
+    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 400) : [];
+    if (!pts.length) for (let s = p.s; s < p.seg.len; s += 400) pts.push(p.seg.path.at(s));
+    let d = 0, lx = p.x, ly = p.y;
+    this.upcomingCache = null;
+    for (const q of pts) {
+      d += Math.hypot(q.x - lx, q.y - ly); lx = q.x; ly = q.y;
+      if (d > 12000) break;
+      const z = zoneAt(q.x, q.y);
+      if (z !== this.zone) { this.upcomingCache = { zone: z, dist: d }; break; }
+    }
+    return this.upcomingCache;
   }
 
   // ----------------------------------------------------------- vehicle visuals
@@ -741,6 +843,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (due.length) { this.pending = this.pending.filter((q) => q.t > 0); for (const q of due) q.fn(); }
     this.clk += dt;
     this.blink += dt;
+    this.upcomingT -= dt;
     const p = this.player;
     const prevS = p.s, prevSeg = p.seg;
     const cam = this.cameras.main;
@@ -752,6 +855,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.inc.update(dt, G.mode === 'drive' && this.pstate !== 'docked');
     this.playerLogic(dt, prevS, prevSeg);
     this.updateCamera(dt);
+    this.updateZone(dt);
     this.updateVisuals(dt);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
     this.inc.draw(this.incG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
@@ -980,6 +1084,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.stars.tilePositionX = cam.scrollX * 0.08 * this.zoomCur;
     this.stars.tilePositionY = cam.scrollY * 0.08 * this.zoomCur;
     this.stars.tileScaleX = this.stars.tileScaleY = 1;
+    this.wash.setScale(this.washBase / this.zoomCur);
     // culling
     const cx = cam.midPoint.x, cy = cam.midPoint.y;
     const r = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur + 80;

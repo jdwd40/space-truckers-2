@@ -5,6 +5,8 @@ export class Sfx {
   engOsc: OscillatorNode[] = [];
   engGain!: GainNode;
   engFilter!: BiquadFilterNode;
+  padGain!: GainNode;
+  padFilter!: BiquadFilterNode;
   muted = false;
   private tickT = 0;
   private sirenOn = 0;
@@ -24,14 +26,21 @@ export class Sfx {
       const o = ctx.createOscillator(); o.type = type; o.frequency.value = f; o.connect(this.engFilter); o.start(); this.engOsc.push(o);
     }
     // ambient pad
-    const pad = ctx.createGain(); pad.gain.value = 0.022; pad.connect(this.master);
+    const pad = ctx.createGain(); pad.gain.value = 0.022; pad.connect(this.master); this.padGain = pad;
     const lfo = ctx.createOscillator(); lfo.frequency.value = 0.07;
     const lfoG = ctx.createGain(); lfoG.gain.value = 0.012; lfo.connect(lfoG); lfoG.connect(pad.gain); lfo.start();
-    const padF = ctx.createBiquadFilter(); padF.type = 'lowpass'; padF.frequency.value = 900; padF.connect(pad);
+    const padF = ctx.createBiquadFilter(); padF.type = 'lowpass'; padF.frequency.value = 900; padF.connect(pad); this.padFilter = padF;
     for (const f of [110, 164.8, 220, 277.2, 329.6]) {
       const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f; o.detune.value = Math.random() * 8 - 4;
       const g = ctx.createGain(); g.gain.value = f > 250 ? 0.35 : 0.6; o.connect(g); g.connect(padF); o.start();
     }
+  }
+  /** ease the ambient pad to a new tone and level (zones call this as the scenery changes) */
+  setAmbient(cutoff: number, gain: number) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.padFilter.frequency.setTargetAtTime(cutoff, t, 1.5);
+    this.padGain.gain.setTargetAtTime(gain, t, 1.5);
   }
   setMuted(m: boolean) { this.muted = m; if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.8, this.ctx.currentTime, 0.05); }
 

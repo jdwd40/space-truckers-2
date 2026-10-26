@@ -4,6 +4,7 @@ import { G, SPEEDS, CLASSES, RANKS, Job, bus, rankOf, money, distTxt, save, toas
 import { Station } from './network';
 import { clamp } from './geom';
 import { sfx } from './audio';
+import { ZoneDef } from './zones';
 
 const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const PANEL = 0x111a33, EDGE = 0x3c5a9a, CYAN = 0x5ad8ff;
@@ -34,6 +35,9 @@ export class UIScene extends Phaser.Scene {
   banner = { x: 0, y: 0, w: 0, h: 0 };
   last: Record<string, string> = {};
   pendingBoard: { st: Station; jobs: Job[]; summary: any } | null = null;
+  // "Entering <zone>" title card: shown when driving, queued otherwise, never repeated for the same zone within 60 s
+  zoneCard!: Phaser.GameObjects.Container; zoneName!: Phaser.GameObjects.Text; zoneTag!: Phaser.GameObjects.Text;
+  zoneCardT = -1; zoneCardZone: ZoneDef | null = null; pendingZone: ZoneDef | null = null; zoneShownAt: Record<string, number> = {};
 
   constructor() { super('ui'); }
 
@@ -45,6 +49,7 @@ export class UIScene extends Phaser.Scene {
     bus.on('hint', (m: string) => this.showHint(m));
     bus.on('hintHide', () => { if (this.hintTimer > 0.5) this.hintTimer = 0.5; });
     bus.on('board', (st: Station, jobs: Job[], summary: any) => { this.pendingBoard = { st, jobs, summary }; this.time.delayedCall(summary ? 900 : 200, () => this.openBoard()); });
+    bus.on('zone', (z: ZoneDef) => { this.pendingZone = z; });
     bus.on('police', (reason: string, fine: number) => this.showToast(fine > 0 ? `🚓 Pulled over: ${reason} — fined ${money(fine)}` : `🚓 Pulled over: ${reason} — just a warning this time!`, '#ffb4b4', 5000));
     const kb = this.input.keyboard!;
     kb.on('keydown', (e: KeyboardEvent) => this.onKey(e));
@@ -223,6 +228,16 @@ export class UIScene extends Phaser.Scene {
     this.hintT = this.txt(0, 0, '', 16, '#ffffff', false, [0.5, 0.5]);
     this.hintT.setWordWrapWidth(470 * u).setAlign('center').setLineSpacing(4 * u);
     this.hintBox.add([this.hintG, this.hintT]); this.hintBox.setVisible(false); R.add(this.hintBox);
+    // zone title card, under the toast
+    this.zoneCard = this.add.container(W / 2, 96 * u);
+    const zg = this.add.graphics();
+    zg.fillStyle(0x0b1230, 0.3); zg.fillRoundedRect(-170 * u, -22 * u, 340 * u, 92 * u, 14 * u);
+    const zl = this.txt(0, -12 * u, 'ENTERING', 12, '#9fe9ff', true, [0.5, 0.5]); zl.setLetterSpacing(3 * u);
+    this.zoneName = this.txt(0, 14 * u, '', 30, '#ffffff', true, [0.5, 0.5]);
+    this.zoneName.setStroke('#1c2a52', 6 * u).setShadow(0, 4 * u, '#000000', 8 * u, true, true);
+    this.zoneTag = this.txt(0, 48 * u, '', 14, '#bcd2ff', false, [0.5, 0.5]);
+    this.zoneCard.add([zg, zl, this.zoneName, this.zoneTag]); this.zoneCard.setVisible(false).setAlpha(0); R.add(this.zoneCard);
+    if (this.zoneCardT >= 0 && this.zoneCardZone) { this.zoneName.setText(this.zoneCardZone.name); this.zoneTag.setText(this.zoneCardZone.tagline); this.zoneCard.setVisible(true); }
     if (this.modal) this.children.bringToTop(this.modal);
   }
 
@@ -297,11 +312,32 @@ export class UIScene extends Phaser.Scene {
     this.hintTimer = 7.5;
   }
 
+  private showZoneCard(z: ZoneDef) {
+    this.zoneCardZone = z; this.zoneCardT = 0;
+    this.zoneShownAt[z.id] = this.time.now;
+    this.zoneName.setText(z.name); this.zoneTag.setText(z.tagline);
+    this.zoneCard.setVisible(true).setAlpha(0);
+  }
+  private updateZoneCard(dt: number) {
+    if (this.pendingZone && G.mode === 'drive' && !this.modal && !G.paused) {
+      const z = this.pendingZone; this.pendingZone = null;
+      const last = this.zoneShownAt[z.id];
+      if (last === undefined || this.time.now - last > 60000) this.showZoneCard(z);
+    }
+    if (this.zoneCardT < 0 || G.paused) return;
+    // fade in 0.8 s, hold 2.6 s, fade out 1.2 s
+    const t = this.zoneCardT += dt;
+    const a = t < 0.8 ? t / 0.8 : t < 3.4 ? 1 : Math.max(0, 1 - (t - 3.4) / 1.2);
+    this.zoneCard.setAlpha(a);
+    if (t >= 4.6) { this.zoneCardT = -1; this.zoneCard.setVisible(false); }
+  }
+
   override update(_t: number, dms: number) {
     const dt = dms / 1000;
     const u = this.u, W = this.scale.width;
     const w = this.world;
     if (!w.player) return;
+    this.updateZoneCard(dt);
     const set = (k: string, v: string, t: Phaser.GameObjects.Text) => { if (this.last[k] !== v) { this.last[k] = v; t.setText(v); } };
     set('money', money(G.money), this.moneyT);
     const rank = rankOf(G.earned);
