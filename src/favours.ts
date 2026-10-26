@@ -4,6 +4,7 @@ import { Traffic, Veh } from './traffic';
 import { G, toast, hint, money, save } from './state';
 import { rand, pick } from './geom';
 import { sfx } from './audio';
+import type { GlowLayer } from './glow';
 
 /** Roadside favour tuning: seconds between offers, rewards, how long a boost takes. */
 export const FAVOUR_CFG = {
@@ -175,13 +176,13 @@ export class Favours {
   }
 
   // ------------------------------------------------------------------ jump-lead sparks while boosting
-  draw(fx: Phaser.GameObjects.Graphics, time: number) {
+  draw(fx: Phaser.GameObjects.Graphics, gl: GlowLayer, time: number) {
     const f = this.active;
     if (!f || f.kind !== 'boost' || f.phase !== 'boosting') return;
     const p = this.host.player, v = f.veh;
     const a = { x: p.x, y: p.y }, b = v.back(v.totLen - 4);
     fx.lineStyle(2.5, 0xffd23c, 0.8); fx.lineBetween(a.x, a.y, b.x, b.y);
-    for (let k = 0; k < 6; k++) { const t = Math.random(); fx.fillStyle(0xbff4ff, 0.9); fx.fillCircle(a.x + (b.x - a.x) * t + rand(-6, 6), a.y + (b.y - a.y) * t + rand(-6, 6), rand(1, 2.5)); }
-    fx.fillStyle(0x7fdcff, 0.3 + 0.2 * Math.sin(time * 30)); fx.fillCircle(b.x, b.y, 16);
+    for (let k = 0; k < 6; k++) { const t = Math.random(); gl.dot(a.x + (b.x - a.x) * t + rand(-6, 6), a.y + (b.y - a.y) * t + rand(-6, 6), rand(1, 2.5), 0xbff4ff, 0.9); }
+    gl.soft(b.x, b.y, 16, 0x7fdcff, 0.3 + 0.2 * Math.sin(time * 30));
   }
 }

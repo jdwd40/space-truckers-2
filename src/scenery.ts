@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { Network } from './network';
 import { Pt, rand, pick } from './geom';
 import { Cullable } from './render';
+import type { GlowLayer } from './glow';
 
 /** Big roadside landmarks, one per route, so a journey has recognisable waypoints. */
 export type LandmarkKind = 'cruiser' | 'shipyard' | 'array' | 'moon' | 'asteroids';
@@ -163,23 +164,24 @@ export class Landmarks {
     }
   }
 
-  update(g: G, fx: G, time: number, cx: number, cy: number, viewR: number) {
+  /** g is the plain landmark layer, fx an additive Graphics kept for lines, gl the pooled glow images */
+  update(g: G, fx: G, gl: GlowLayer, time: number, cx: number, cy: number, viewR: number) {
     for (const an of this.anims) {
       const sp = an.sp;
       if (Math.hypot(sp.x - cx, sp.y - cy) > viewR + sp.size + 300) continue;
       const W = (x: number, y: number) => { const r = rot(x, y, sp.h); return { x: sp.x + r.x, y: sp.y + r.y }; };
       if (sp.kind === 'cruiser') {
-        an.lights.forEach((l, i) => { const on = Math.sin(time * (1.7 + i * 0.6) + i * 2) > (i === 0 ? 0.2 : 0.75); if (!on) return; const p = W(l.x, l.y); fx.fillStyle(i === 0 ? 0xff3b30 : 0xffd27a, 0.9); fx.fillCircle(p.x, p.y, 4); fx.fillStyle(i === 0 ? 0xff3b30 : 0xffd27a, 0.25); fx.fillCircle(p.x, p.y, 16); });
-        const e = W(-880, 0); fx.fillStyle(0x4fb8ff, 0.06 + 0.04 * Math.sin(time * 0.8)); fx.fillCircle(e.x, e.y, 120);
+        an.lights.forEach((l, i) => { const on = Math.sin(time * (1.7 + i * 0.6) + i * 2) > (i === 0 ? 0.2 : 0.75); if (!on) return; const p = W(l.x, l.y); const col = i === 0 ? 0xff3b30 : 0xffd27a; gl.dot(p.x, p.y, 4, col, 0.9); gl.soft(p.x, p.y, 16, col, 0.25); });
+        const e = W(-880, 0); gl.soft(e.x, e.y, 120, 0x4fb8ff, 0.06 + 0.04 * Math.sin(time * 0.8));
       } else if (sp.kind === 'shipyard') {
-        an.lights.forEach((l, i) => { const on = Math.floor(time * 2 + i) % 3 === 0; const p = W(l.x, l.y); fx.fillStyle(on ? 0xffffff : 0xffb020, on ? 0.9 : 0.5); fx.fillCircle(p.x, p.y, on ? 5 : 3.5); if (on) { fx.fillStyle(0xffffff, 0.2); fx.fillCircle(p.x, p.y, 18); } });
+        an.lights.forEach((l, i) => { const on = Math.floor(time * 2 + i) % 3 === 0; const p = W(l.x, l.y); gl.dot(p.x, p.y, on ? 5 : 3.5, on ? 0xffffff : 0xffb020, on ? 0.9 : 0.5); if (on) gl.soft(p.x, p.y, 18, 0xffffff, 0.2); });
         // travelling gantry crane across the frame
         const gx = Math.sin(time * 0.18) * 600;
         const a = W(gx, -410), b = W(gx, 410);
         g.lineStyle(16, 0x2b3140, 0.5); g.lineBetween(a.x + 10, a.y + 14, b.x + 10, b.y + 14);
         g.lineStyle(14, 0xffb347, 1); g.lineBetween(a.x, a.y, b.x, b.y);
-        const t = W(gx, Math.sin(time * 0.5) * 200); g.fillStyle(0x23293a, 1); g.fillRect(t.x - 16, t.y - 16, 32, 32); fx.fillStyle(0xffb347, 0.6); fx.fillCircle(t.x, t.y, 8);
-        if (Math.sin(time * 7) > 0.8 && Math.random() < 0.7) { const w = W(gx + rand(-40, 40), rand(-100, 100)); fx.fillStyle(0xbff4ff, 0.9); fx.fillCircle(w.x, w.y, 5); fx.fillStyle(0x7fdcff, 0.35); fx.fillCircle(w.x, w.y, 30); }
+        const t = W(gx, Math.sin(time * 0.5) * 200); g.fillStyle(0x23293a, 1); g.fillRect(t.x - 16, t.y - 16, 32, 32); gl.soft(t.x, t.y, 8, 0xffb347, 0.6);
+        if (Math.sin(time * 7) > 0.8 && Math.random() < 0.7) { const w = W(gx + rand(-40, 40), rand(-100, 100)); gl.dot(w.x, w.y, 5, 0xbff4ff, 0.9); gl.soft(w.x, w.y, 30, 0x7fdcff, 0.35); }
       } else if (sp.kind === 'array') {
         const a = time * 0.2 + sp.h;
         g.fillStyle(0x000000, 0.3); g.fillEllipse(sp.x + 10 + Math.cos(a) * 20, sp.y + 14 + Math.sin(a) * 20, 240, 160);
@@ -188,16 +190,16 @@ export class Landmarks {
         g.fillStyle(0xbfcadb, 1); g.fillEllipse(sp.x + Math.cos(a) * 20, sp.y + Math.sin(a) * 20, 180, 110);
         g.lineStyle(3, 0x8a94a8, 0.8); for (let k = 1; k < 4; k++) g.strokeEllipse(sp.x + Math.cos(a) * 20, sp.y + Math.sin(a) * 20, 240 * k / 4, 160 * k / 4);
         g.fillStyle(0x2a3a66, 1); g.fillCircle(sp.x + Math.cos(a) * 100, sp.y + Math.sin(a) * 100, 12);
-        fx.fillStyle(0x5ad8ff, 0.5 + 0.3 * Math.sin(time * 5)); fx.fillCircle(sp.x + Math.cos(a) * 100, sp.y + Math.sin(a) * 100, 14);
-        an.lights.forEach((l, i) => { if (Math.sin(time * 2.2 + i * 1.6) < 0.5) return; const p = W(l.x, l.y); fx.fillStyle(0xff3b30, 0.9); fx.fillCircle(p.x, p.y, 4); fx.fillStyle(0xff3b30, 0.3); fx.fillCircle(p.x, p.y, 14); });
-        fx.fillStyle(0x5ad8ff, 0.08 + 0.04 * Math.sin(time * 1.5)); fx.fillCircle(sp.x, sp.y, 330);
+        gl.soft(sp.x + Math.cos(a) * 100, sp.y + Math.sin(a) * 100, 14, 0x5ad8ff, 0.5 + 0.3 * Math.sin(time * 5));
+        an.lights.forEach((l, i) => { if (Math.sin(time * 2.2 + i * 1.6) < 0.5) return; const p = W(l.x, l.y); gl.dot(p.x, p.y, 4, 0xff3b30, 0.9); gl.soft(p.x, p.y, 14, 0xff3b30, 0.3); });
+        gl.soft(sp.x, sp.y, 330, 0x5ad8ff, 0.08 + 0.04 * Math.sin(time * 1.5));
       } else if (sp.kind === 'moon') {
         const c = W(0, 0);
-        fx.fillStyle(0xff9a3c, 0.12 + 0.08 * Math.sin(time * 1.1)); fx.fillEllipse(c.x, c.y, 1900, 360);
-        for (const f of an.frag) { const p = W(f.x + Math.sin(time * 0.3 + f.ph) * 12, f.y + Math.cos(time * 0.25 + f.ph) * 10); fx.fillStyle(0xff9a3c, 0.12); fx.fillCircle(p.x, p.y, f.r * 0.8); }
+        gl.softEllipse(c.x, c.y, 950, 180, sp.h, 0xff9a3c, 0.12 + 0.08 * Math.sin(time * 1.1));
+        for (const f of an.frag) { const p = W(f.x + Math.sin(time * 0.3 + f.ph) * 12, f.y + Math.cos(time * 0.25 + f.ph) * 10); gl.soft(p.x, p.y, f.r * 0.8, 0xff9a3c, 0.12); }
       } else {
-        an.rocks.forEach((r, i) => { const p = W(r.x, r.y); const k = 0.5 + 0.5 * Math.sin(time * 1.4 + i * 0.9); fx.fillStyle(r.col, 0.08 + 0.1 * k); fx.fillCircle(p.x, p.y, r.r * 0.9); fx.fillStyle(r.col, 0.7 + 0.3 * k); fx.fillCircle(p.x + r.r * 0.3, p.y - r.r * 0.2, 4); });
-        fx.fillStyle(0x5ad8ff, 0.5 + 0.4 * Math.sin(time * 3)); fx.fillCircle(sp.x, sp.y, 12); fx.fillStyle(0x5ad8ff, 0.15); fx.fillCircle(sp.x, sp.y, 70);
+        an.rocks.forEach((r, i) => { const p = W(r.x, r.y); const k = 0.5 + 0.5 * Math.sin(time * 1.4 + i * 0.9); gl.soft(p.x, p.y, r.r * 0.9, r.col, 0.08 + 0.1 * k); gl.dot(p.x + r.r * 0.3, p.y - r.r * 0.2, 4, r.col, 0.7 + 0.3 * k); });
+        gl.dot(sp.x, sp.y, 12, 0x5ad8ff, 0.5 + 0.4 * Math.sin(time * 3)); gl.soft(sp.x, sp.y, 70, 0x5ad8ff, 0.15);
       }
     }
   }

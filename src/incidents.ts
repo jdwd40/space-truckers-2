@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { Network, Seg, LW } from './network';
 import { Traffic, Veh } from './traffic';
 import { clamp, pick, rand } from './geom';
+import type { GlowLayer } from './glow';
 import { SPEEDS, bumperCrashAt, bumperFee, bumperRepair } from './state';
 
 export interface Block { lane: number; s0: number; s1: number; inc: Incident }
@@ -364,7 +365,8 @@ export class Incidents {
     return best < 0 ? l0 : best;
   }
 
-  draw(g: Phaser.GameObjects.Graphics, fx: Phaser.GameObjects.Graphics, time: number, cx: number, cy: number, r: number) {
+  /** g is the plain incident layer; the lamps, halos, sparks and smoke are pooled glow images */
+  draw(g: Phaser.GameObjects.Graphics, fx: GlowLayer, time: number, cx: number, cy: number, r: number) {
     g.clear();
     const rect = (x: number, y: number, h: number, len: number, wid: number, col: number, a = 1) => {
       const c = Math.cos(h), s = Math.sin(h), nx = -s, ny = c;
@@ -406,7 +408,7 @@ export class Incidents {
         const q = seg.path.at(inc.blocks[0].s0 - 14, seg.laneLat(l0) + dir * (i - 1) * 13);
         const on = i === act || (i === 0 && act === 3);
         g.fillStyle(on ? 0xffc02a : 0x5a4a1a, 1); g.fillCircle(q.x, q.y, 4.6);
-        if (on) { fx.fillStyle(0xffb020, 0.5); fx.fillCircle(q.x, q.y, 14); }
+        if (on) fx.soft(q.x, q.y, 14, 0xffb020, 0.5);
       }
       // officer waving traffic past
       if (inc.policeHere && inc.phase !== 'clear') {
@@ -422,7 +424,7 @@ export class Incidents {
         g.fillStyle(0xf2c9a0, 1); g.fillCircle(o.x, o.y, 3.6);
         g.lineStyle(3.5, 0xffd23c, 1); g.lineBetween(o.x, o.y, tx, ty);
         g.fillStyle(0xff3b30, 1); g.fillCircle(tx, ty, 3.6);
-        fx.fillStyle(0xff3b30, 0.6); fx.fillCircle(tx, ty, 12);
+        fx.soft(tx, ty, 12, 0xff3b30, 0.6);
       }
       // repair crew welding next to the casualty
       if (inc.phase === 'repair' && inc.towHere) {
@@ -430,19 +432,18 @@ export class Incidents {
         if (v) {
           const q = seg.path.at(v.s + 4, seg.laneLat(l0) - dir * 14);
           g.fillStyle(0xffb020, 1); g.fillCircle(q.x, q.y, 4.5); g.fillStyle(0xf2c9a0, 1); g.fillCircle(q.x, q.y, 2.3);
-          for (let k = 0; k < 4; k++) { fx.fillStyle(0xbff4ff, 0.8); fx.fillCircle(q.x + rand(-9, 9), q.y + rand(-9, 9), rand(0.8, 2.2)); }
-          fx.fillStyle(0x7fdcff, 0.35 + 0.2 * Math.sin(time * 30)); fx.fillCircle(q.x, q.y, 9);
+          for (let k = 0; k < 4; k++) fx.dot(q.x + rand(-9, 9), q.y + rand(-9, 9), rand(0.8, 2.2), 0xbff4ff, 0.8);
+          fx.soft(q.x, q.y, 9, 0x7fdcff, 0.35 + 0.2 * Math.sin(time * 30));
         }
       }
       for (const v of inc.cas) if (v.smoke) this.smoke(fx, v, time);
     }
   }
-  private smoke(fx: Phaser.GameObjects.Graphics, v: Veh, time: number) {
+  private smoke(fx: GlowLayer, v: Veh, time: number) {
     for (let k = 0; k < 4; k++) {
       const ph = (time * 0.7 + k / 4 + v.id * 0.37) % 1;
-      fx.fillStyle(0xdde6f5, (1 - ph) * 0.16);
-      fx.fillCircle(v.x + Math.sin(v.id + k * 2) * 6 + ph * 10, v.y + Math.cos(v.id * 1.3 + k) * 5 - ph * 12, 4 + ph * 10);
+      fx.soft(v.x + Math.sin(v.id + k * 2) * 6 + ph * 10, v.y + Math.cos(v.id * 1.3 + k) * 5 - ph * 12, 4 + ph * 10, 0xdde6f5, (1 - ph) * 0.16);
     }
-    if (Math.random() < 0.15) { fx.fillStyle(0xffd27a, 0.7); fx.fillCircle(v.x + rand(-6, 6), v.y + rand(-6, 6), rand(1, 2.2)); }
+    if (Math.random() < 0.15) fx.dot(v.x + rand(-6, 6), v.y + rand(-6, 6), rand(1, 2.2), 0xffd27a, 0.7);
   }
 }

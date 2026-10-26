@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
-import { Cullable, DEPTH, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
+import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
+import { Baker } from './bake';
+import { GlowLayer, makeGlowTextures } from './glow';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
 import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel, PAX_MAX, PAX_PAY } from './state';
 import { sfx } from './audio';
@@ -26,7 +28,10 @@ const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, ves
 
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
 
-interface Vis { units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
+interface Vis { keys: string[]; units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
+type Unit = { im: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image };
+/** the traffic simulation steps at this fixed rate */
+const STEP = 1 / 50;
 /** ambient high-altitude ship; `a` is its target alpha (0 while it is over a road or station) */
 interface Flyer { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; x: number; y: number; h: number; v: number; a: number }
 /** one drifting puff of zone fog */
@@ -39,8 +44,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   layer!: Phaser.GameObjects.Layer;
   mapLayer!: Phaser.GameObjects.Layer;
   culls: Cullable[] = [];
+  baker!: Baker;
   fx: Phaser.GameObjects.Graphics[] = [];
   fxTop!: Phaser.GameObjects.Graphics;
+  /** pooled glow images beside each fx layer: lights and halos go here, the fx Graphics keep only lines */
+  glow: GlowLayer[] = [];
+  glowTop!: GlowLayer;
   guide!: Phaser.GameObjects.Graphics;
   sigG!: Phaser.GameObjects.Graphics;
   routeG!: Phaser.GameObjects.Graphics;
@@ -54,6 +63,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** gameplay-clock timers: they only tick while the game is not paused */
   pending: { t: number; fn: () => void }[] = [];
   flyers: Flyer[] = [];
+  /** cab / trailer images by texture, waiting to be reused: a ship only owns images while it is near the view */
+  vehPool = new Map<string, Unit[]>();
+  /** simulation time owed to the traffic step loop */
+  acc = 0;
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
   /** world-space direction of one screen-space unit to the right and down, from the camera rotation: shadows fall that way */
   shX = { x: 1, y: 0 }; shY = { x: 0, y: 1 };
@@ -84,6 +97,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   create() {
     makeTextures(this);
+    makeGlowTextures(this);
     this.net = new Network();
     this.layer = this.add.layer();
     this.mapLayer = this.add.layer();
@@ -93,7 +107,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     (this.mapLayer as any).cameraFilter |= this.cameras.main.id;
 
     this.buildScenery();
-    this.culls = drawWorld(this, this.net, this.layer);
+    this.baker = new Baker(this, this.layer);
+    this.culls = drawWorld(this, this.net, this.layer, this.baker);
     for (const lb of this.net.laybys) {
       const g = this.add.graphics().setDepth(DEPTH.veh(0) + 0.2); this.layer.add(g); this.paxG.set(lb, g);
       this.culls.push({ obj: g, x0: lb.x - 500, y0: lb.y - 500, x1: lb.x + 500, y1: lb.y + 500 });
@@ -105,18 +120,23 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.outposts = new Outposts(this.net, STATION_R);
     for (const st of this.net.stations) {
       const extras: Phaser.GameObjects.GameObject[] = [];
-      this.layer.add(drawStation(this, st, STATION_R, this.outposts, extras));
-      for (const e of extras) this.layer.add(e);
+      const g = drawStation(this, st, STATION_R, this.outposts, extras);
+      // a station is thousands of draw commands: bake it into one texture now and cull it like everything else
+      const pad = STATION_R + 500;
+      const bb = { x0: st.x - STATION_R - 400, y0: st.y - STATION_R - 400, x1: st.x + STATION_R + 400, y1: st.y + STATION_R + 400 };
+      this.culls.push({ obj: this.baker.add(g, { x0: -pad, y0: -pad, x1: pad, y1: pad }, BAKE.station, true), ...bb });
+      for (const e of extras) { this.layer.add(e); this.culls.push({ obj: e as unknown as Cullable['obj'], ...bb }); }
       for (const seg of st.arr) this.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
     }
     this.decoG = this.add.graphics().setDepth(DEPTH.station + 0.3); this.layer.add(this.decoG);
-    for (let l = 0; l < 4; l++) { const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD); this.fx.push(g); this.layer.add(g); }
+    for (let l = 0; l < 4; l++) { const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD); this.fx.push(g); this.layer.add(g); this.glow.push(new GlowLayer(this, this.layer, DEPTH.veh(l) + 0.4)); }
     this.fxTop = this.add.graphics().setDepth(DEPTH.fxTop).setBlendMode(Phaser.BlendModes.ADD); this.layer.add(this.fxTop);
+    this.glowTop = new GlowLayer(this, this.layer, DEPTH.fxTop);
     this.guide = this.add.graphics(); this.layer.add(this.guide);
     this.sigG = this.add.graphics().setDepth(DEPTH.sign + 0.2); this.layer.add(this.sigG);
 
     this.traffic = new Traffic(this.net, this);
-    this.traffic.onAdd = (v) => this.addVis(v);
+    // ships get their images lazily, the first frame they come near the view (see updateVisuals)
     this.traffic.onRemove = (v) => this.removeVis(v);
     // dock gates: arrivals queue just short of the hangar door, departures at a barrier just outside it
     for (const st of this.net.stations) {
@@ -159,6 +179,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     // dev only: force a zone from the console, e.g. `__zone('nebula')`
     if (import.meta.env.DEV) (window as any).__zone = (id: ZoneId) => { const z = ZONE_BY_ID[id]; if (z) this.switchZone(z); };
     // dev only: bring a set piece in right away, e.g. `__setpiece('whale')`
+    if (import.meta.env.DEV) (window as any).__bake = this.baker;
     if (import.meta.env.DEV) (window as any).__setpiece = (k: PieceKind) => { const cam = this.cameras.main; this.setPieces.spawn(k, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur); };
   }
 
@@ -328,9 +349,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker = this.add.graphics(); this.mapLayer.add(this.mapMarker);
     this.mapArrow = this.add.image(0, 0, 'navarrow'); this.mapLayer.add(this.mapArrow);
   }
+  navMaskG: Phaser.GameObjects.Graphics | null = null;
   setNavRect(x: number, y: number, size: number) {
     this.minicam.setViewport(Math.round(x), Math.round(y), Math.round(size), Math.round(size));
-    const mg = this.make.graphics({ x: 0, y: 0 }, false);
+    // the HUD rebuilds on every resize: drop the previous mask and its graphics before making new ones
+    if (this.navMaskG) { this.minicam.clearMask(true); this.navMaskG.destroy(); }
+    const mg = this.navMaskG = this.make.graphics({ x: 0, y: 0 }, false);
     mg.fillStyle(0xffffff, 1); mg.fillCircle(x + size / 2, y + size / 2, size / 2 - 1);
     this.minicam.setMask(mg.createGeometryMask(), true);
     this.miniZoom = size / 4200;
@@ -423,14 +447,32 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   // ----------------------------------------------------------- vehicle visuals
   private addVis(v: Veh) {
-    const vis: Vis = { units: [], shadows: [] };
+    const vis: Vis = { keys: [], units: [], shadows: [] };
     v.gfx = vis;
     this.buildUnits(v);
   }
+  /** take a cab or trailer image pair for texture k from the pool, or make one */
+  private acquireUnit(k: string): Unit {
+    const u = this.vehPool.get(k)?.pop();
+    if (u) { u.im.setVisible(true); u.sh.setVisible(true); return u; }
+    const sh = this.add.image(0, 0, k).setScale(0.5).setTint(0x000000).setAlpha(0.3);
+    const im = this.add.image(0, 0, k).setScale(0.5);
+    this.layer.add(sh); this.layer.add(im);
+    return { im, sh };
+  }
+  private releaseUnits(vis: Vis) {
+    vis.keys.forEach((k, i) => {
+      const im = vis.units[i], sh = vis.shadows[i];
+      im.setVisible(false); sh.setVisible(false);
+      let pool = this.vehPool.get(k);
+      if (!pool) { pool = []; this.vehPool.set(k, pool); }
+      pool.push({ im, sh });
+    });
+    vis.keys = []; vis.units = []; vis.shadows = [];
+  }
   private buildUnits(v: Veh) {
     const vis = v.gfx as Vis;
-    for (const u of [...vis.units, ...vis.shadows]) u.destroy();
-    vis.units = []; vis.shadows = [];
+    this.releaseUnits(vis);
     const keys: string[] = [];
     if (v.type === 'mite') keys.push('mite' + v.variant);
     else if (v.type === 'pod') keys.push('pod' + v.variant);
@@ -448,10 +490,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const style = v.type === 'player' ? (G.job ? TRAILER_FOR[G.job.from] ?? 0 : 0) : v.type === 'tanker' ? 6 : [0, 1, 2, 3, 4, 5, 7][(v.variant + v.id) % 7];
     for (const t of v.trailers) keys.push(trailerTex(this, t, v.type === 'player' && G.job ? (G.job.cls === 3 ? 5 : style) : style));
     for (const k of keys) {
-      const sh = this.add.image(0, 0, k).setScale(0.5).setTint(0x000000).setAlpha(0.3);
-      const im = this.add.image(0, 0, k).setScale(0.5);
-      this.layer.add(sh); this.layer.add(im);
-      vis.shadows.push(sh); vis.units.push(im);
+      const u = this.acquireUnit(k);
+      vis.keys.push(k); vis.shadows.push(u.sh); vis.units.push(u.im);
     }
     // put the new images where the ship is right away: left at the origin they showed there for a frame
     this.placeVis(v, vis);
@@ -459,7 +499,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private removeVis(v: Veh) {
     const vis = v.gfx as Vis | null;
     if (!vis) return;
-    for (const u of [...vis.units, ...vis.shadows]) u.destroy();
+    this.releaseUnits(vis);
     v.gfx = null;
   }
   refreshPlayerVis() {
@@ -563,7 +603,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     toast(atFault ? `💥 Accident! ${money(fee)} paid. ${who} — your delivery clock is paused.` : `💥 Accident — not your fault! ${who} — your delivery clock is paused.`, '#ffb4b4', 6000);
     hint('crash', 'After a crash, both ships wait for police and a repair truck. Your delivery clock stops while you wait, and you get a little extra time when you set off.');
     if (inc.waitFor || _other && (_other.state === 'crashed' || _other.state === 'broken')) hint('wreck', 'You hit a vehicle that was already stopped. Watch the sat-nav for coned-off lanes and move over early — the police deal with one scene at a time.');
-    (window as any).Tesana.gameplay.death({ levelId: G.job ? G.job.id : 'free-roam', x: p.x, y: p.y, name: 'accident' });
+    (window as any).Tesana?.gameplay?.death?.({ levelId: G.job ? G.job.id : 'free-roam', x: p.x, y: p.y, name: 'accident' });
   }
   private onPlayerReleased(inc: Incident) {
     G.braking = false; if (G.speedSet === 0) G.speedSet = 3;
@@ -822,13 +862,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     e.s += e.v * dt;
     if (e.s > e.seg.len - 10) e.s = e.seg.len - 10;
     const q = e.seg.path.at(e.s, e.lat);
-    e.img.setPosition(q.x, q.y).setRotation(q.h).setDepth(DEPTH.veh(0) + 0.1);
-    e.sh.setPosition(q.x + 5, q.y + 7).setRotation(q.h).setDepth(DEPTH.veh(0));
+    // assigning a depth re-sorts the whole layer even when it is unchanged, so only set it when it moves
+    e.img.setPosition(q.x, q.y).setRotation(q.h);
+    if (e.img.depth !== DEPTH.veh(0) + 0.1) e.img.setDepth(DEPTH.veh(0) + 0.1);
+    e.sh.setPosition(q.x + 5, q.y + 7).setRotation(q.h);
+    if (e.sh.depth !== DEPTH.veh(0)) e.sh.setDepth(DEPTH.veh(0));
     const blink = Math.floor(this.clk * 6) % 2;
-    const g = this.fxTop;
     const ox = -Math.sin(q.h) * 6, oy = Math.cos(q.h) * 6;
-    g.fillStyle(blink ? 0xff3344 : 0x3366ff, 0.8); g.fillCircle(q.x + (blink ? ox : -ox), q.y + (blink ? oy : -oy), 14);
-    g.fillStyle(0xffffff, 0.9); g.fillCircle(q.x + (blink ? ox : -ox), q.y + (blink ? oy : -oy), 4);
+    const lx = q.x + (blink ? ox : -ox), ly = q.y + (blink ? oy : -oy);
+    this.glowTop.soft(lx, ly, 14, blink ? 0xff3344 : 0x3366ff, 0.8);
+    this.glowTop.dot(lx, ly, 4, 0xffffff, 0.9);
     if (this.pstate !== 'pulled' && e.t > 0) {
       const a = Math.max(0, e.img.alpha - dt * 0.4);
       e.img.setAlpha(a); e.sh.setAlpha(a * 0.3);
@@ -853,8 +896,14 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const prevS = p.s, prevSeg = p.seg;
     const cam = this.cameras.main;
     this.traffic.view = { x: cam.midPoint.x, y: cam.midPoint.y, r: Math.hypot(cam.width, cam.height) / 2 / this.zoomCur + 150 };
-    const steps = dt > 0.025 ? 2 : 1;
-    for (let i = 0; i < steps; i++) this.traffic.update(dt / steps);
+    // fixed 50 Hz traffic steps, at most two per frame, so a slow frame cannot double the simulation cost; the rest
+    // of the time is carried over (capped at one step, so a long stall never turns into a burst). A frame that
+    // owes less than a step still simulates what it owes, so the rig never stands still for a frame at 60 fps.
+    this.acc += dt;
+    let n = 0;
+    while (this.acc >= STEP && n < 2) { this.traffic.update(STEP); this.acc -= STEP; n++; }
+    if (n === 0 && this.acc > 0) { this.traffic.update(this.acc); this.acc = 0; }
+    if (this.acc > STEP) this.acc = STEP;
     if (G.job && G.mode === 'drive' && p.state !== 'crashed') G.job.elapsed += dt;
     for (const lb of this.net.laybys) if (lb.refillT > 0) { lb.refillT -= dt; if (lb.refillT <= 0) { lb.waiting = 1 + Math.floor(Math.random() * 3); this.drawPax(lb); } }
     this.inc.update(dt, G.mode === 'drive' && this.pstate !== 'docked');
@@ -864,13 +913,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.setPieces.update(dt, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur, this.zone.id, G.mode === 'drive');
     this.updateVisuals(dt);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
-    this.inc.draw(this.incG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.inc.draw(this.incG, this.glowTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.decoG.clear(); this.landG.clear();
-    this.outposts.update(this.decoG, this.fxTop, this.net, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
-    this.landmarks.update(this.landG, this.fxTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.outposts.update(this.decoG, this.fxTop, this.glowTop, this.net, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.landmarks.update(this.landG, this.fxTop, this.glowTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.favours.update(dt, G.mode === 'drive' && this.pstate !== 'docked' && p.state !== 'crashed');
-    this.favours.draw(this.fxTop, this.clk);
+    this.favours.draw(this.fxTop, this.glowTop, this.clk);
     this.updateEscort(dt);
+    // everything that draws glows has run: park the images that went unused this frame
+    for (const gl of this.glow) gl.end();
+    this.glowTop.end();
     this.drawGuide();
     this.drawSignals();
     this.updateMap(dt);
@@ -1098,6 +1150,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const dx = Math.max(c.x0 - cx, 0, cx - c.x1), dy = Math.max(c.y0 - cy, 0, cy - c.y1);
       c.obj.setVisible(dx * dx + dy * dy < r * r);
     }
+    // baked scenery textures are dropped again once they are a few screens away
+    this.baker.sweep(dt, cx, cy, r * 2.5 + 1500);
     if (Math.floor(this.clk * 10) % 5 === 0) for (const rk of this.rocks) rk.setVisible(Math.abs(rk.x - cx) < r + 200 && Math.abs(rk.y - cy) < r + 200);
     for (const rk of this.rocks) if (rk.visible) rk.rotation += (rk as any).spin * dt;
     // flyers: ambient ships high above the scene. They fade out well before any road or station, checked every frame,
@@ -1153,8 +1207,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const depth = DEPTH.veh(dk.lvl);
       // the shadow falls down and to the right on screen whichever way the camera is turned
       const ox = 5 + dk.lvl * 7 * dk.k, oy = ox * 1.3;
-      im.setPosition(u.x, u.y).setRotation(u.a).setDepth(depth).setAlpha(v.alpha);
-      sh.setPosition(u.x + ox * this.shX.x + oy * this.shY.x, u.y + ox * this.shX.y + oy * this.shY.y).setRotation(u.a).setDepth(depth - 0.05).setAlpha(0.3 * v.alpha);
+      // setDepth queues a full layer sort even for the same value, so it is only called when the deck changes
+      im.setPosition(u.x, u.y).setRotation(u.a).setAlpha(v.alpha);
+      if (im.depth !== depth) im.setDepth(depth);
+      sh.setPosition(u.x + ox * this.shX.x + oy * this.shY.x, u.y + ox * this.shX.y + oy * this.shY.y).setRotation(u.a).setAlpha(0.3 * v.alpha);
+      if (sh.depth !== depth - 0.05) sh.setDepth(depth - 0.05);
     });
     return { units, lvl };
   }
@@ -1166,55 +1223,49 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.fxTop.clear();
     const blinkOn = this.blink % 0.76 < 0.4;
     for (const v of this.traffic.vs) {
-      const vis = v.gfx as Vis | null;
-      if (!vis) continue;
-      // the whole rig counts, so a long one is not cut off while its trailers are still on screen
-      const vis2 = Math.abs(v.x - cx) < r + v.totLen && Math.abs(v.y - cy) < r + v.totLen;
-      for (const u of vis.units) u.setVisible(vis2);
-      for (const u of vis.shadows) u.setVisible(vis2);
-      if (!vis2) continue;
+      // a ship owns images only while it is near the view (the whole rig counts, so a long one is not cut off while
+      // its trailers are still on screen); the rest live in the pool and the layer stays small
+      const near = Math.abs(v.x - cx) < r + v.totLen + 300 && Math.abs(v.y - cy) < r + v.totLen + 300;
+      if (!near) { if (v.gfx && !v.isPlayer) this.removeVis(v); continue; }
+      if (!v.gfx) this.addVis(v);
+      const vis = v.gfx as Vis;
       const { units, lvl } = this.placeVis(v, vis);
       if (v.alpha < 0.05) continue;
-      // lights
-      const g = this.fx[Math.min(3, lvl)];
+      // lights: lamps and halos are pooled images (gl), only the exhaust streak and the player ring stay as lines (g)
+      const g = this.fx[Math.min(3, lvl)], gl = this.glow[Math.min(3, lvl)];
       const last = units[units.length - 1];
       const ca = Math.cos(last.a), sa = Math.sin(last.a);
       const rx = last.x - ca * last.L / 2, ry = last.y - sa * last.L / 2;
       const hw = v.w / 2 - 1.5;
       const thr = v.v > 20 ? Math.min(1, v.v / 300) : 0.2;
-      g.fillStyle(0x4fb8ff, 0.35 * thr * v.alpha); g.fillCircle(rx - ca * 5, ry - sa * 5, 7);
+      gl.soft(rx - ca * 5, ry - sa * 5, 7, 0x4fb8ff, 0.35 * thr * v.alpha);
       if (v.v > 60) { g.lineStyle(4, 0x4fb8ff, 0.18 * v.alpha); g.lineBetween(rx - ca * 4, ry - sa * 4, rx - ca * (10 + v.v * 0.05), ry - sa * (10 + v.v * 0.05)); }
       const nx = -sa, ny = ca;
       if (v.braking) {
-        g.fillStyle(0xff2a2a, 0.9 * v.alpha);
-        g.fillCircle(rx + nx * hw, ry + ny * hw, 2.4); g.fillCircle(rx - nx * hw, ry - ny * hw, 2.4);
-        g.fillStyle(0xff2a2a, 0.3 * v.alpha);
-        g.fillCircle(rx + nx * hw - ca * 2, ry + ny * hw - sa * 2, 7); g.fillCircle(rx - nx * hw - ca * 2, ry - ny * hw - sa * 2, 7);
+        gl.dot(rx + nx * hw, ry + ny * hw, 2.4, 0xff2a2a, 0.9 * v.alpha); gl.dot(rx - nx * hw, ry - ny * hw, 2.4, 0xff2a2a, 0.9 * v.alpha);
+        gl.soft(rx + nx * hw - ca * 2, ry + ny * hw - sa * 2, 7, 0xff2a2a, 0.3 * v.alpha); gl.soft(rx - nx * hw - ca * 2, ry - ny * hw - sa * 2, 7, 0xff2a2a, 0.3 * v.alpha);
       }
       const c0 = units[0];
       const fa = Math.cos(c0.a), fs = Math.sin(c0.a);
       const fx = c0.x + fa * c0.L / 2, fy = c0.y + fs * c0.L / 2;
       const fnx = -fs, fny = fa;
-      g.fillStyle(0xfff6d8, 0.55 * v.alpha);
-      g.fillCircle(fx + fnx * (hw - 1), fy + fny * (hw - 1), 1.8); g.fillCircle(fx - fnx * (hw - 1), fy - fny * (hw - 1), 1.8);
+      gl.dot(fx + fnx * (hw - 1), fy + fny * (hw - 1), 1.8, 0xfff6d8, 0.55 * v.alpha); gl.dot(fx - fnx * (hw - 1), fy - fny * (hw - 1), 1.8, 0xfff6d8, 0.55 * v.alpha);
       if (v.sig !== 0 && blinkOn) {
         const sd = v.sig;
-        g.fillStyle(0xffa51f, 1 * v.alpha);
-        g.fillCircle(fx + fnx * hw * sd, fy + fny * hw * sd, 2.6); g.fillCircle(rx + nx * hw * sd, ry + ny * hw * sd, 2.6);
-        g.fillStyle(0xffa51f, 0.35 * v.alpha);
-        g.fillCircle(fx + fnx * hw * sd, fy + fny * hw * sd, 8); g.fillCircle(rx + nx * hw * sd, ry + ny * hw * sd, 8);
+        gl.dot(fx + fnx * hw * sd, fy + fny * hw * sd, 2.6, 0xffa51f, v.alpha); gl.dot(rx + nx * hw * sd, ry + ny * hw * sd, 2.6, 0xffa51f, v.alpha);
+        gl.soft(fx + fnx * hw * sd, fy + fny * hw * sd, 8, 0xffa51f, 0.35 * v.alpha); gl.soft(rx + nx * hw * sd, ry + ny * hw * sd, 8, 0xffa51f, 0.35 * v.alpha);
       }
       if (v.type === 'police') {
         const b = Math.floor(this.clk * 5 + v.id) % 2;
-        g.fillStyle(b ? 0xff3344 : 0x3366ff, v.siren ? 0.9 : 0.45); g.fillCircle(c0.x, c0.y, v.siren ? 5 : 6);
-        if (v.siren) { g.fillStyle(b ? 0xff3344 : 0x3366ff, 0.35); g.fillCircle(c0.x, c0.y, 18); }
+        gl.dot(c0.x, c0.y, v.siren ? 5 : 6, b ? 0xff3344 : 0x3366ff, v.siren ? 0.9 : 0.45);
+        if (v.siren) gl.soft(c0.x, c0.y, 18, b ? 0xff3344 : 0x3366ff, 0.35);
       } else if (v.siren || v.type === 'tow') {
-        if (blinkOn) { g.fillStyle(0xffb020, 0.85); g.fillCircle(c0.x, c0.y, 4); g.fillStyle(0xffb020, 0.3); g.fillCircle(c0.x, c0.y, 14); }
+        if (blinkOn) { gl.dot(c0.x, c0.y, 4, 0xffb020, 0.85); gl.soft(c0.x, c0.y, 14, 0xffb020, 0.3); }
       }
       if (v.hazard && blinkOn) {
         for (const sd of [-1, 1]) {
-          g.fillStyle(0xffa51f, v.alpha); g.fillCircle(fx + fnx * hw * sd, fy + fny * hw * sd, 2.8); g.fillCircle(rx + nx * hw * sd, ry + ny * hw * sd, 2.8);
-          g.fillStyle(0xffa51f, 0.35 * v.alpha); g.fillCircle(fx + fnx * hw * sd, fy + fny * hw * sd, 9); g.fillCircle(rx + nx * hw * sd, ry + ny * hw * sd, 9);
+          gl.dot(fx + fnx * hw * sd, fy + fny * hw * sd, 2.8, 0xffa51f, v.alpha); gl.dot(rx + nx * hw * sd, ry + ny * hw * sd, 2.8, 0xffa51f, v.alpha);
+          gl.soft(fx + fnx * hw * sd, fy + fny * hw * sd, 9, 0xffa51f, 0.35 * v.alpha); gl.soft(rx + nx * hw * sd, ry + ny * hw * sd, 9, 0xffa51f, 0.35 * v.alpha);
         }
       }
       if (v.isPlayer) {
@@ -1223,9 +1274,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       }
     }
     for (const f of this.flyers) {
+      // a faded-out flyer (over a road or station) draws nothing: its trail used to show as a ghost streak
+      if (f.img.alpha < 0.02) continue;
       const ca = Math.cos(f.h), sa = Math.sin(f.h);
-      this.fxTop.fillStyle(0x4fb8ff, 0.4); this.fxTop.fillCircle(f.x - ca * 9, f.y - sa * 9, 6);
-      this.fxTop.lineStyle(4, 0x4fb8ff, 0.15); this.fxTop.lineBetween(f.x - ca * 9, f.y - sa * 9, f.x - ca * 40, f.y - sa * 40);
+      this.glowTop.soft(f.x - ca * 9, f.y - sa * 9, 6, 0x4fb8ff, 0.4 * f.img.alpha);
+      this.fxTop.lineStyle(4, 0x4fb8ff, 0.15 * f.img.alpha); this.fxTop.lineBetween(f.x - ca * 9, f.y - sa * 9, f.x - ca * 40, f.y - sa * 40);
     }
   }
 
@@ -1233,7 +1286,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const g = this.guide; g.clear();
     const p = this.player, seg = p.seg;
     if (!p.goal || G.mode !== 'drive') return;
-    g.setDepth(DEPTH.road(seg.level) + 0.5);
+    const gd = DEPTH.road(seg.level) + 0.5;
+    if (g.depth !== gd) g.setDepth(gd);
     const pulse = 0.55 + 0.3 * Math.sin(this.clk * 5);
     const chev = (x: number, y: number, h: number, col: number, a: number) => {
       const c = Math.cos(h), s = Math.sin(h), nx = -s, ny = c;

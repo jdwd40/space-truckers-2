@@ -17,9 +17,9 @@ export const TRAFFIC_CFG = {
   /** chance that a freshly spawned truck brings a convoy of 2-3 more behind it */
   convoyChance: 0.22,
   /** hard caps so a busy network never runs away */
-  maxVehicles: 900,
+  maxVehicles: 500,
   maxLocals: 560,
-  initialLocals: 900,
+  initialLocals: 300,
   maxPolice: 12,
 };
 /** vehicles in a lane that is about to be dropped start merging this far before the section ends */
@@ -70,6 +70,8 @@ export class Veh {
   gate: Gate | null = null; gateDone: Gate | null = null;
   /** the segment this ship was on before its current one, where it left it and where it joined this one: the trailers may still be back there */
   prevSeg: Seg | null = null; prevS = 0; enterS = 0;
+  /** far from the camera: planned and moved only every fourth step, with four times the step */
+  far = false;
   constructor(public type: VType, public seg: Seg, public s: number, public lane: number, public v: number) {
     const sp = SPEC[type];
     this.cab = sp.cab; this.w = sp.w; this.aMax = sp.a; this.T = sp.T;
@@ -154,6 +156,10 @@ export class Traffic {
   onRemove: (v: Veh) => void = () => {};
   onCollide: (a: Veh, b: Veh, rv: number) => void = () => {};
   clock = 0; bumpCool = 0;
+  /** update counter, for the far-traffic round robin */
+  frame = 0;
+  /** police on the road (kept as a counter: filtering every ship on each spawn was a hot spot) */
+  policeN = 0;
   localSegs: Seg[];
   constructor(public net: Network, public ctl: PlayerCtl) {
     this.spawnT = net.spawnSegs.map(() => Math.random() * 3);
@@ -170,14 +176,14 @@ export class Traffic {
     veh.resetTrail();
     this.vs.push(veh);
     seg.veh.push(veh);
+    if (type === 'police') this.policeN++;
     this.onAdd(veh);
     return veh;
   }
   private randType(seg: Seg, hub = false): VType {
     const r = Math.random();
     if (seg.kind === 'avenue') return r < 0.5 ? 'mite' : r < 0.68 ? 'taxi' : r < 0.85 ? 'pod' : r < 0.93 ? 'van' : 'bus';
-    const police = this.vs.filter((v) => v.type === 'police' && !v.emergency).length;
-    if (r < 0.04 && police < TRAFFIC_CFG.maxPolice) return 'police';
+    if (r < 0.04 && this.policeN < TRAFFIC_CFG.maxPolice) return 'police';
     // local shuttles run between the hubs
     if (hub && !seg.trucky && r < 0.09) return 'shuttle';
     const q = Math.random();
@@ -333,8 +339,19 @@ export class Traffic {
     for (const seg of this.net.segs) if (seg.veh.length > 1) seg.veh.sort((a, b) => a.s - b.s);
     this.gateUpdate(dt);
     for (const sv of this.net.services) this.svcUpdate(sv);
-    for (const v of this.vs) if (!v.dead) this.plan(v);
-    for (const v of this.vs) if (!v.dead) this.move(v, dt);
+    // level of detail: ships well outside the view take one big step every fourth update instead of four small ones
+    this.frame++;
+    const vw = this.view, farR = vw.r + 2500, slot = this.frame & 3;
+    for (const v of this.vs) {
+      if (v.dead) continue;
+      v.far = !v.isPlayer && (Math.abs(v.x - vw.x) > farR || Math.abs(v.y - vw.y) > farR);
+      if (v.far && (v.id & 3) !== slot) continue;
+      this.plan(v);
+    }
+    for (const v of this.vs) {
+      if (v.dead) continue;
+      if (v.far) { if ((v.id & 3) === slot) this.move(v, dt * 4); } else this.move(v, dt);
+    }
     this.collide(dt);
     for (const v of this.vs) {
       if (v.dead) continue;
@@ -349,7 +366,7 @@ export class Traffic {
     // removals
     for (let i = this.vs.length - 1; i >= 0; i--) {
       const v = this.vs[i];
-      if (v.dead) { this.release(v); this.onRemove(v); this.vs.splice(i, 1); }
+      if (v.dead) { this.release(v); if (v.type === 'police') this.policeN--; this.onRemove(v); this.vs.splice(i, 1); }
     }
     // spawning
     const count = this.vs.length;

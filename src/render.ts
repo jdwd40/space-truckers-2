@@ -2,8 +2,11 @@ import Phaser from 'phaser';
 import { Network, Seg, LW, TAPER, Sign, SignPanel, Station } from './network';
 import { Pt, rand, clamp as clampV } from './geom';
 import type { Outposts } from './outposts';
+import type { Baker, Box } from './bake';
 
-export interface Cullable { obj: Phaser.GameObjects.GameObject & { setVisible(v: boolean): unknown }; x0: number; y0: number; x1: number; y1: number }
+export interface Cullable { obj: { setVisible(v: boolean): unknown }; x0: number; y0: number; x1: number; y1: number }
+/** texels per world unit when static scenery is baked into textures: fine enough for the camera's closest zoom */
+export const BAKE = { station: 0.5, road: 1.5, decor: 1.5, sign: 2 };
 
 const ASPH = 0x3a4153, RIM = 0xa9b3c8, SHOULDER = 0x30364a, NEON = 0x5ad8ff;
 export const DEPTH = { road: (l: number) => 5 + l * 3, veh: (l: number) => 6 + l * 3, sign: 7.6, station: 17, fxTop: 18 };
@@ -638,9 +641,11 @@ function bboxOf(pts: Pt[], pad: number) {
   return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
 }
 
-export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameObjects.Layer): Cullable[] {
+export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameObjects.Layer, baker: Baker): Cullable[] {
   const items: Cullable[] = [];
-  const add = (obj: Cullable['obj'], bb: { x0: number; y0: number; x1: number; y1: number }) => { layer.add(obj); items.push({ obj, ...bb }); };
+  // everything here is static, so it is handed to the baker: the Graphics itself never renders, an Image of it does.
+  // `box` is the drawing's extent in the object's local space (world space for the graphics drawn at the origin).
+  const add = (obj: Phaser.GameObjects.Graphics | Phaser.GameObjects.Container, bb: { x0: number; y0: number; x1: number; y1: number }, box: Box, scale: number) => { items.push({ obj: baker.add(obj, box, scale), ...bb }); };
   const order = (s: Seg) => (s.kind === 'motorway' ? 0 : s.kind === 'avenue' ? 1 : s.kind === 'services' ? 3 : 2);
   const segs = net.segs.slice().sort((a, b) => order(a) - order(b));
   for (const seg of segs) {
@@ -652,12 +657,12 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
         // above the deck below, below that deck's ships
         const sg = scene.add.graphics().setDepth(DEPTH.veh(seg.level - 1) - 0.3);
         drawSegShadow(sg, seg, s0, s1);
-        add(sg, bb);
+        add(sg, bb, bb, BAKE.road);
       }
       const g = scene.add.graphics();
       g.setDepth(DEPTH.road(seg.level));
       drawSegPiece(g, seg, s0, s1);
-      add(g, bb);
+      add(g, bb, bb, BAKE.road);
     }
   }
   // crossings
@@ -673,22 +678,24 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
       const pole = seg.path.at(l.s, half + (seg.shoulder ? LW : 0) + 16);
       g.fillStyle(0x1c2130, 1); g.fillCircle(pole.x, pole.y, 9);
     }
-    add(g, { x0: c.x - 400, y0: c.y - 400, x1: c.x + 400, y1: c.y + 400 });
+    add(g, { x0: c.x - 400, y0: c.y - 400, x1: c.x + 400, y1: c.y + 400 }, bboxOf(c.corners, 90), BAKE.road);
   }
   // services decor
   for (const sv of net.services) {
     const seg = sv.seg; const W = seg.lanes * seg.laneW;
     const g = scene.add.graphics().setDepth(DEPTH.road(0) + 0.1);
+    const pts: Pt[] = [];
     // islands between pump lanes
     for (let i = 0; i <= seg.lanes; i++) {
       const lat = -W / 2 + i * seg.laneW;
       const a = seg.path.at(sv.pumpS - 46, lat), b = seg.path.at(sv.pumpS + 6, lat);
+      pts.push(a, b);
       g.lineStyle(6, 0xd7dde8, 1); g.lineBetween(a.x, a.y, b.x, b.y);
       const m = seg.path.at(sv.pumpS - 20, lat);
       g.fillStyle(0x2f7de1, 1); g.fillCircle(m.x, m.y, 5);
       g.fillStyle(0xffffff, 1); g.fillCircle(m.x, m.y, 2);
     }
-    add(g, { x0: sv.x - 600, y0: sv.y - 600, x1: sv.x + 600, y1: sv.y + 600 });
+    add(g, { x0: sv.x - 600, y0: sv.y - 600, x1: sv.x + 600, y1: sv.y + 600 }, bboxOf(pts, 12), BAKE.decor);
     // shop and garden beside the forecourt
     const gp = seg.path.at(seg.len / 2, W / 2 + 26 + 110);
     const sg = scene.add.graphics().setDepth(DEPTH.road(0) - 0.3).setPosition(gp.x, gp.y).setRotation(sv.h);
@@ -701,7 +708,7 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     sg.fillStyle(0xe8eef7, 1); sg.fillRoundedRect(-60, -gh / 2 + 16, 120, 66, 10);
     sg.fillStyle(0x2f7de1, 1); sg.fillRect(-60, -gh / 2 + 16, 120, 16);
     sg.fillStyle(0x9fe9ff, 1); sg.fillRect(-48, -gh / 2 + 52, 96, 12);
-    add(sg, { x0: sv.x - 600, y0: sv.y - 600, x1: sv.x + 600, y1: sv.y + 600 });
+    add(sg, { x0: sv.x - 600, y0: sv.y - 600, x1: sv.x + 600, y1: sv.y + 600 }, { x0: -gw / 2 - 6, y0: -gh / 2 - 6, x1: gw / 2 + 8, y1: gh / 2 + 10 }, BAKE.decor);
     // canopy
     const cg = scene.add.graphics().setDepth(DEPTH.veh(0) + 0.6);
     const cp = seg.path.at(sv.pumpS - 20, 0);
@@ -709,7 +716,7 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     // outline only: a filled canopy over the pumps tinted every vehicle that drove or parked under it
     cg.lineStyle(3, 0x5ad8ff, 0.9); cg.strokeRoundedRect(-44, -W / 2 - 14, 88, W + 28, 8);
     cg.lineStyle(1.5, 0xeaf2ff, 0.5); cg.strokeRoundedRect(-40, -W / 2 - 10, 80, W + 20, 6);
-    add(cg, { x0: cp.x - 200, y0: cp.y - 200, x1: cp.x + 200, y1: cp.y + 200 });
+    add(cg, { x0: cp.x - 200, y0: cp.y - 200, x1: cp.x + 200, y1: cp.y + 200 }, { x0: -50, y0: -W / 2 - 20, x1: 50, y1: W / 2 + 20 }, BAKE.decor);
   }
   // lay-by gardens
   for (const lb of net.laybys) {
@@ -720,11 +727,11 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     g.fillStyle(0x3e8f4e, 1); g.fillEllipse(p.x, p.y, 222, 222);
     for (let i = 0; i < 9; i++) { const x = p.x + rand(-70, 70), y = p.y + rand(-70, 70); g.fillStyle(0x1f5f33, 1); g.fillCircle(x + 3, y + 4, 12); g.fillStyle(0x3caa55, 1); g.fillCircle(x, y, 11); }
     g.fillStyle(0xe8eef7, 1); g.fillRoundedRect(p.x - 22, p.y - 14, 44, 28, 6);
-    add(g, { x0: p.x - 300, y0: p.y - 300, x1: p.x + 300, y1: p.y + 300 });
+    add(g, { x0: p.x - 300, y0: p.y - 300, x1: p.x + 300, y1: p.y + 300 }, { x0: p.x - 130, y0: p.y - 130, x1: p.x + 130, y1: p.y + 130 }, BAKE.decor);
   }
   // signs
-  for (const sg of net.signs) { const r = makeSign(scene, sg); add(r.obj, r.bb); }
-  for (const ls of net.limitSigns) { const r = makeLimitSign(scene, ls.seg, ls.s, ls.limit); add(r.obj, r.bb); }
+  for (const sg of net.signs) { const r = makeSign(scene, sg); add(r.obj, r.bb, r.box, BAKE.sign); }
+  for (const ls of net.limitSigns) { const r = makeLimitSign(scene, ls.seg, ls.s, ls.limit); add(r.obj, r.bb, r.box, BAKE.sign); }
   // speed cameras
   for (const cam of net.cameras) {
     const g = scene.add.graphics().setDepth(DEPTH.veh(0) + 0.3);
@@ -732,7 +739,7 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     g.fillStyle(0x1c2130, 1); g.fillRoundedRect(-10, -10, 20, 20, 4);
     g.fillStyle(0xffd23c, 1); g.fillRect(-8, -8, 16, 16);
     g.fillStyle(0x1c2130, 1); g.fillCircle(2, 0, 5);
-    add(g, { x0: cam.x - 100, y0: cam.y - 100, x1: cam.x + 100, y1: cam.y + 100 });
+    add(g, { x0: cam.x - 100, y0: cam.y - 100, x1: cam.x + 100, y1: cam.y + 100 }, { x0: -14, y0: -14, x1: 14, y1: 14 }, BAKE.decor);
   }
   return items;
 }
@@ -796,11 +803,15 @@ function makeSign(scene: Phaser.Scene, sg: Sign) {
   c.setRotation(base.h + Math.PI / 2);
   // a gantry board used to sit above the vehicles on its own level, so every rig passing under it blinked out for a
   // few frames; it now sits just above the road surface instead. Side signs stay on top but clear of any aux lane.
-  c.setDepth(sg.kind === 'gantry' ? DEPTH.road(seg.level) + 0.7 : 16.6);
+  // every sign sits just above its own deck and below that deck's ships; the HUD lives in the UI scene, so nothing
+  // here can ever draw over it
+  c.setDepth(DEPTH.road(seg.level) + 0.7);
+  let box: Box;
   if (sg.kind === 'gantry') {
     const g = scene.add.graphics();
     const barW = sg.panels.length > 1 ? Math.max(n * LW + sh + 36, sg.panels.length * 144 + 16) : n * LW + sh + 36;
     const bx = sh / 2 - barW / 2;
+    box = { x0: bx - 12, y0: -36, x1: bx + barW + 14, y1: 42 };
     g.fillStyle(0x0b0f18, 0.3); g.fillRect(bx + 6, -3 + 8, barW, 7);
     g.fillStyle(0x8d97ab, 1); g.fillRect(bx, -3, barW, 7);
     g.fillStyle(0x5c6478, 1); g.fillCircle(bx, 0, 7); g.fillCircle(bx + barW, 0, 7);
@@ -823,21 +834,22 @@ function makeSign(scene: Phaser.Scene, sg: Sign) {
     g.fillStyle(0x5c6478, 1); g.fillRect(x - 3, 0, 6, 34);
     c.add(g);
     panel(scene, c, x, 0, p);
+    box = { x0: x - 90, y0: -34, x1: x + 94, y1: 42 };
   }
-  return { obj: c, bb: { x0: base.x - 520, y0: base.y - 520, x1: base.x + 520, y1: base.y + 520 } };
+  return { obj: c, bb: { x0: base.x - 520, y0: base.y - 520, x1: base.x + 520, y1: base.y + 520 }, box };
 }
 
 function makeLimitSign(scene: Phaser.Scene, seg: Seg, s: number, limit: number) {
   const half = (seg.lanes * LW) / 2 + (seg.shoulder ? LW : 0);
   const p = seg.path.at(s, half + 34);
-  const c = scene.add.container(p.x, p.y).setRotation(p.h + Math.PI / 2).setDepth(DEPTH.sign);
+  const c = scene.add.container(p.x, p.y).setRotation(p.h + Math.PI / 2).setDepth(DEPTH.road(seg.level) + 0.7);
   const g = scene.add.graphics();
   g.fillStyle(0x0b0f18, 0.35); g.fillCircle(4, 5, 23);
   g.fillStyle(0xffffff, 1); g.fillCircle(0, 0, 23);
   g.lineStyle(6, 0xd83a32, 1); g.strokeCircle(0, 0, 19);
   c.add(g);
   c.add(scene.add.text(0, 1, String(limit), { fontFamily: FONT, fontSize: '22px', fontStyle: 'bold', color: '#1a1d26' }).setOrigin(0.5).setResolution(2));
-  return { obj: c, bb: { x0: p.x - 200, y0: p.y - 200, x1: p.x + 200, y1: p.y + 200 } };
+  return { obj: c, bb: { x0: p.x - 200, y0: p.y - 200, x1: p.x + 200, y1: p.y + 200 }, box: { x0: -28, y0: -28, x1: 32, y1: 33 } };
 }
 
 // ---------------------------------------------------------------- stations & scenery

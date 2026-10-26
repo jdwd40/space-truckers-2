@@ -12,6 +12,10 @@ export class Sfx {
   muted = false;
   private tickT = 0;
   private sirenOn = 0;
+  /** engine automation runs at 10 Hz, not every frame; these remember the last values sent */
+  private engT = -1; private engK = -1; private engBrake = false;
+  /** one second of white noise, shared by every noise burst instead of filling a fresh buffer per call */
+  private noiseBuf: AudioBuffer | null = null;
 
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
@@ -50,6 +54,9 @@ export class Sfx {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     const k = speed / 345;
+    // 4 automation events per frame added up to hundreds a second; the 0.2 s time constants hide a 10 Hz update
+    if (t - this.engT < 0.1 || (Math.abs(k - this.engK) < 0.002 && braking === this.engBrake)) return;
+    this.engT = t; this.engK = k; this.engBrake = braking;
     this.engOsc[0].frequency.setTargetAtTime(38 + k * 46, t, 0.2);
     this.engOsc[1].frequency.setTargetAtTime(76 + k * 92, t, 0.2);
     this.engFilter.frequency.setTargetAtTime(200 + k * 380 + (braking ? -60 : 0), t, 0.2);
@@ -66,14 +73,17 @@ export class Sfx {
   private noise(dur: number, freq: number, vol = 0.1, q = 1, when = 0) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime + when;
-    const len = Math.floor(this.ctx.sampleRate * dur);
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = this.ctx.createBufferSource(); src.buffer = buf;
+    if (!this.noiseBuf) {
+      const len = this.ctx.sampleRate;
+      this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
     const f = this.ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
-    const g = this.ctx.createGain(); g.gain.value = vol;
-    src.connect(f); f.connect(g); g.connect(this.master); src.start(t);
+    // the fade that used to be baked into each buffer is a gain ramp now
+    const g = this.ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.linearRampToValueAtTime(0, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.master); src.start(t); src.stop(t + dur + 0.02);
   }
   click() { this.tone(880, 0.06, 'triangle', 0.08); }
   tick(dt: number, on: boolean) {

@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { rand, pick } from './geom';
 import type { ZoneId } from './zones';
+import { GlowLayer } from './glow';
 
 /**
  * Rare background set pieces far below the road: a space whale, a derelict cruiser, a ring station and the odd comet.
@@ -36,12 +37,14 @@ export class SetPieces {
   private cometT = rand(60, 150);
   private lastKind: PieceKind | null = null;
   private lastZone: ZoneId = 'open';
-  private lights: Phaser.GameObjects.Graphics;
+  /** pooled glow images for the pieces' lights, just above the pieces themselves */
+  private lights: GlowLayer;
 
-  constructor(private scene: Phaser.Scene, private layer: Phaser.GameObjects.Layer) {
-    this.lights = scene.add.graphics().setDepth(0.86).setBlendMode(Phaser.BlendModes.ADD);
-    layer.add(this.lights);
+  constructor(scene: Phaser.Scene, private layer: Phaser.GameObjects.Layer) {
+    this.scene = scene;
+    this.lights = new GlowLayer(scene, layer, 0.86);
   }
+  private scene: Phaser.Scene;
 
   /** bring a piece in from just outside the view, aimed across it; ignores the cooldowns */
   spawn(kind: PieceKind, cx: number, cy: number, viewR: number): Piece {
@@ -98,7 +101,7 @@ export class SetPieces {
       }
       if (!this.comet && this.cometT <= 0) this.spawn('comet', cx, cy, viewR);
     }
-    const g = this.lights; g.clear();
+    const g = this.lights;
     for (let i = this.alive.length - 1; i >= 0; i--) {
       const p = this.alive[i];
       p.age += dt;
@@ -121,7 +124,7 @@ export class SetPieces {
         const c = Math.cos(im.rotation), s = Math.sin(im.rotation);
         WHALE_SPOTS.forEach(([lx, ly], k) => {
           const a = 0.15 + 0.2 * (0.5 + 0.5 * Math.sin(p.age * 1.4 + k * 0.9 + p.seed));
-          g.fillStyle(0x8fe3ff, a * p.alpha); g.fillCircle(x + (lx * c - ly * s) * p.scale, y + (lx * s + ly * c) * p.scale, 9 * p.scale);
+          g.soft(x + (lx * c - ly * s) * p.scale, y + (lx * s + ly * c) * p.scale, 9 * p.scale, 0x8fe3ff, a * p.alpha);
         });
       } else if (p.kind === 'cruiser') {
         im.setRotation(p.rot);
@@ -134,7 +137,7 @@ export class SetPieces {
         ([[-200, -20, 2.3, 0xff6a4a], [120, 30, 2.9, 0xffb04a], [230, -10, 2.6, 0xff6a4a]] as [number, number, number, number][]).forEach(([lx, ly, per, col], k) => {
           const on = Math.sin((p.age / per) * Math.PI * 2 + k * 1.7 + p.seed) > 0.75;
           if (!on) return;
-          g.fillStyle(col, 0.55 * p.alpha); g.fillCircle(x + (lx * c - ly * s) * p.scale, y + (lx * s + ly * c) * p.scale, 7 * p.scale);
+          g.soft(x + (lx * c - ly * s) * p.scale, y + (lx * s + ly * c) * p.scale, 7 * p.scale, col, 0.55 * p.alpha);
         });
       } else if (p.kind === 'ring') {
         im.setRotation(p.rot);
@@ -142,9 +145,9 @@ export class SetPieces {
         for (let k = 0; k < 16; k++) {
           const a = p.rot + (k / 16) * Math.PI * 2;
           const tw = 0.25 + 0.3 * (0.5 + 0.5 * Math.sin(p.age * 2.3 + k * 1.3 + p.seed));
-          g.fillStyle(0xcfe8ff, tw * p.alpha); g.fillCircle(x + Math.cos(a) * r, y + Math.sin(a) * r, 5 * p.scale);
+          g.dot(x + Math.cos(a) * r, y + Math.sin(a) * r, 5 * p.scale, 0xcfe8ff, tw * p.alpha);
         }
-        if (Math.sin(p.age * 2.5) > 0.6) { g.fillStyle(0xff8a5a, 0.6 * p.alpha); g.fillCircle(x, y, 9 * p.scale); }
+        if (Math.sin(p.age * 2.5) > 0.6) g.soft(x, y, 9 * p.scale, 0xff8a5a, 0.6 * p.alpha);
       } else {
         // comet: the tail is drawn behind the head, opposite its velocity, shrinking and fading over ~600 units
         im.setRotation(0);
@@ -152,10 +155,10 @@ export class SetPieces {
         const n = 12;
         for (let k = 1; k <= n; k++) {
           const t = k / n, d = t * 600;
-          g.fillStyle(k % 2 ? 0xbfefff : 0xffffff, 0.45 * (1 - t) * (1 - t) * p.alpha);
-          g.fillCircle(x + dx * d, y + dy * d, (14 - 11 * t) + 2 * Math.sin(p.age * 9 + k));
+          g.soft(x + dx * d, y + dy * d, (14 - 11 * t) + 2 * Math.sin(p.age * 9 + k), k % 2 ? 0xbfefff : 0xffffff, 0.45 * (1 - t) * (1 - t) * p.alpha);
         }
       }
     }
+    g.end();
   }
 }

@@ -228,6 +228,9 @@ export class Radio {
     const ctx = this.ctx!;
     const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq; o.detune.value = detune;
     this.wow.connect(o.detune);
+    // a connection into an AudioParam counts as a reference per the spec: unhook it so Safari and Firefox can free the
+    // finished oscillator (Chrome collects it either way)
+    o.onended = () => { try { this.wow.disconnect(o.detune); } catch { /* already gone */ } };
     const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t);
     o.connect(g); g.connect(dest); o.start(t); o.stop(stopAt);
     return [o, g];

@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { Network, Station } from './network';
 import { Pt, rand, pick } from './geom';
 import { DEPTH, trailerTex } from './render';
+import type { GlowLayer } from './glow';
 
 /** Which existing stations carry a distinct outpost identity. */
 export const OUTPOST_KIND: Record<string, OutpostKind | undefined> = { vesta: 'mining', harbor: 'truckstop', glacier: 'research', ember: 'scrapyard' };
@@ -280,7 +281,8 @@ export class Outposts {
   }
 
   // ------------------------------------------------------------------ per-frame animation (only for outposts in view)
-  update(g: G, fx: G, net: Network, time: number, cx: number, cy: number, viewR: number) {
+  /** per-frame animation: g is the plain deco layer, fx an additive Graphics kept for lines, gl the pooled glow images */
+  update(g: G, fx: G, gl: GlowLayer, net: Network, time: number, cx: number, cy: number, viewR: number) {
     for (const st of net.stations) {
       const L = this.layouts.get(st.id);
       if (!L || Math.hypot(st.x - cx, st.y - cy) > viewR + L.R + 200) continue;
@@ -300,20 +302,20 @@ export class Outposts {
       // warm / cool floodlights
       for (const l of L.lights) {
         const k = l.flicker ? 1 - l.flicker * (Math.sin(time * 23 + l.x) > 0.6 ? 1 : 0) : 1;
-        fx.fillStyle(l.col, 0.16 * k); fx.fillCircle(X + l.x, Y + l.y, l.r);
-        fx.fillStyle(l.col, 0.35 * k); fx.fillCircle(X + l.x, Y + l.y, l.r * 0.35);
+        gl.soft(X + l.x, Y + l.y, l.r, l.col, 0.16 * k);
+        gl.soft(X + l.x, Y + l.y, l.r * 0.35, l.col, 0.35 * k);
       }
       if (L.kind === 'mining') {
         for (let i = 0; i < L.dust.length; i++) {
           const d = L.dust[i], ph = (time * 0.18 + i * 0.37) % 1;
-          fx.fillStyle(0xd8b890, 0.12 * (1 - ph)); fx.fillCircle(X + d.x + ph * 30 + Math.sin(time + i) * 6, Y + d.y - ph * 24, 14 + ph * 34);
+          gl.soft(X + d.x + ph * 30 + Math.sin(time + i) * 6, Y + d.y - ph * 24, 14 + ph * 34, 0xd8b890, 0.12 * (1 - ph));
         }
-        fx.fillStyle(0xff9a3c, 0.25 + 0.1 * Math.sin(time * 2)); fx.fillCircle(X, Y, 60);
+        gl.soft(X, Y, 60, 0xff9a3c, 0.25 + 0.1 * Math.sin(time * 2));
       } else if (L.kind === 'truckstop') {
         const n = L.neon[0];
         const on = Math.sin(time * 17) > -0.92 || Math.sin(time * 0.3) > 0.9;
         const c = Math.cos(n.a), s = Math.sin(n.a);
-        fx.fillStyle(0xff4fd8, on ? 0.35 : 0.08); fx.fillCircle(X + n.x, Y + n.y, 120);
+        gl.soft(X + n.x, Y + n.y, 120, 0xff4fd8, on ? 0.35 : 0.08);
         fx.lineStyle(3, 0xff7fe6, on ? 0.9 : 0.2);
         const hw = n.w / 2 + 2, hh = n.h / 2 + 2;
         const q = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([x, y]) => ({ x: X + n.x + c * x - s * y, y: Y + n.y + s * x + c * y }));
@@ -325,8 +327,8 @@ export class Outposts {
         for (let i = 0; i < 4; i++) fx.lineBetween(q2[i].x, q2[i].y, q2[(i + 1) % 4].x, q2[(i + 1) % 4].y);
         // rotating beacon on the sign pole
         const ba = time * 1.6;
-        fx.fillStyle(0xffd23c, 0.8); fx.fillCircle(X + n.x + Math.cos(ba) * 14, Y + n.y + Math.sin(ba) * 14, 4);
-        for (const cn of L.canopies) { fx.fillStyle(0xeaf2ff, 0.12); fx.fillCircle(X + cn.x, Y + cn.y, 150); }
+        gl.dot(X + n.x + Math.cos(ba) * 14, Y + n.y + Math.sin(ba) * 14, 4, 0xffd23c, 0.8);
+        for (const cn of L.canopies) gl.soft(X + cn.x, Y + cn.y, 150, 0xeaf2ff, 0.12);
       } else if (L.kind === 'research') {
         const ds = L.dish!, a = time * 0.25 + ds.a, tilt = 0.55;
         const dx = X + ds.x, dy = Y + ds.y;
@@ -335,21 +337,21 @@ export class Outposts {
         g.fillStyle(0xf8fdff, 1); g.fillEllipse(dx + Math.cos(a) * 10, dy + Math.sin(a) * 10, 110, 70);
         g.fillStyle(0xbfe0f5, 1); g.fillEllipse(dx + Math.cos(a) * 10, dy + Math.sin(a) * 10, 80, 46);
         g.fillStyle(0x2a4a6a, 1); g.fillCircle(dx + Math.cos(a) * 44, dy + Math.sin(a) * 44, 7);
-        fx.fillStyle(0x9be7ff, 0.5 + 0.3 * Math.sin(time * 4)); fx.fillCircle(dx + Math.cos(a) * 44, dy + Math.sin(a) * 44, 10);
+        gl.soft(dx + Math.cos(a) * 44, dy + Math.sin(a) * 44, 10, 0x9be7ff, 0.5 + 0.3 * Math.sin(time * 4));
         for (let i = 0; i < L.antennas.length; i++) {
           const an = L.antennas[i];
-          if (Math.sin(time * 2.4 + i * 1.3) > 0.55) { fx.fillStyle(0xff3b30, 0.9); fx.fillCircle(X + an.x + Math.cos(an.a) * 70, Y + an.y + Math.sin(an.a) * 70, 4); fx.fillStyle(0xff3b30, 0.3); fx.fillCircle(X + an.x + Math.cos(an.a) * 70, Y + an.y + Math.sin(an.a) * 70, 12); }
+          if (Math.sin(time * 2.4 + i * 1.3) > 0.55) { const ax = X + an.x + Math.cos(an.a) * 70, ay = Y + an.y + Math.sin(an.a) * 70; gl.dot(ax, ay, 4, 0xff3b30, 0.9); gl.soft(ax, ay, 12, 0xff3b30, 0.3); }
         }
-        for (let i = 0; i < L.domes.length; i++) { const d = L.domes[i]; fx.fillStyle(0x7fe08a, 0.1 + 0.06 * Math.sin(time * 1.3 + i)); fx.fillCircle(X + d.x, Y + d.y, 110); }
-        fx.fillStyle(0x9be7ff, 0.2 + 0.1 * Math.sin(time * 2)); fx.fillCircle(X, Y, 70);
+        for (let i = 0; i < L.domes.length; i++) { const d = L.domes[i]; gl.soft(X + d.x, Y + d.y, 110, 0x7fe08a, 0.1 + 0.06 * Math.sin(time * 1.3 + i)); }
+        gl.soft(X, Y, 70, 0x9be7ff, 0.2 + 0.1 * Math.sin(time * 2));
       } else {
         // welding flashes and sparks
         for (let i = 0; i < L.welds.length; i++) {
           const w = L.welds[i], ph = (time * 0.6 + i * 0.41) % 1;
           if (ph < 0.22 && Math.random() < 0.85) {
-            fx.fillStyle(0xbff4ff, 0.9); fx.fillCircle(X + w.x, Y + w.y, 4);
-            fx.fillStyle(0x7fdcff, 0.4); fx.fillCircle(X + w.x, Y + w.y, 20 + Math.random() * 10);
-            for (let k = 0; k < 5; k++) { fx.fillStyle(0xffd27a, 0.9); fx.fillCircle(X + w.x + rand(-16, 16), Y + w.y + rand(-14, 10), rand(0.8, 2)); }
+            gl.dot(X + w.x, Y + w.y, 4, 0xbff4ff, 0.9);
+            gl.soft(X + w.x, Y + w.y, 20 + Math.random() * 10, 0x7fdcff, 0.4);
+            for (let k = 0; k < 5; k++) gl.dot(X + w.x + rand(-16, 16), Y + w.y + rand(-14, 10), rand(0.8, 2), 0xffd27a, 0.9);
           }
         }
         // maintenance drones circling the hulls
@@ -358,14 +360,14 @@ export class Outposts {
           const x = X + d.cx + Math.cos(a) * d.r, y = Y + d.cy + Math.sin(a) * d.r * 0.7 + bob;
           g.fillStyle(0x000000, 0.25); g.fillCircle(x + 8, y + 12, 7);
           g.fillStyle(0x2b3140, 1); g.fillCircle(x, y, 7); g.fillStyle(0x8a94a8, 1); g.fillCircle(x - 6, y - 5, 3); g.fillCircle(x + 6, y - 5, 3); g.fillCircle(x - 6, y + 5, 3); g.fillCircle(x + 6, y + 5, 3);
-          fx.fillStyle(d.col, 0.9); fx.fillCircle(x, y, 2.5); fx.fillStyle(d.col, 0.25); fx.fillCircle(x, y, 10);
+          gl.dot(x, y, 2.5, d.col, 0.9); gl.soft(x, y, 10, d.col, 0.25);
         }
         // smelter glow and embers
         const m = L.smelter!, cx2 = X + m.x + Math.cos(m.a) * 90, cy2 = Y + m.y + Math.sin(m.a) * 90;
-        fx.fillStyle(0xff7a2a, 0.45 + 0.15 * Math.sin(time * 6)); fx.fillCircle(cx2, cy2, 18);
-        fx.fillStyle(0xff7a2a, 0.12); fx.fillCircle(cx2, cy2, 70);
-        for (let k = 0; k < 5; k++) { const ph = (time * 0.5 + k * 0.2) % 1; fx.fillStyle(0xffb347, 0.6 * (1 - ph)); fx.fillCircle(cx2 + Math.sin(time * 3 + k) * 10 * ph, cy2 - ph * 60, 2 + ph * 3); }
-        fx.fillStyle(0xff7a2a, 0.25 + 0.1 * Math.sin(time * 2)); fx.fillCircle(X, Y, 60);
+        gl.soft(cx2, cy2, 18, 0xff7a2a, 0.45 + 0.15 * Math.sin(time * 6));
+        gl.soft(cx2, cy2, 70, 0xff7a2a, 0.12);
+        for (let k = 0; k < 5; k++) { const ph = (time * 0.5 + k * 0.2) % 1; gl.dot(cx2 + Math.sin(time * 3 + k) * 10 * ph, cy2 - ph * 60, 2 + ph * 3, 0xffb347, 0.6 * (1 - ph)); }
+        gl.soft(X, Y, 60, 0xff7a2a, 0.25 + 0.1 * Math.sin(time * 2));
       }
     }
   }
