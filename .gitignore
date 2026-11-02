@@ -9,6 +9,7 @@ node_modules/
 *.log
 .DS_Store
 .vite/
+dist/
 .dream-loop/
 .tesana/asset-jobs/
 

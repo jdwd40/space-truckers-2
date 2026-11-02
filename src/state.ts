@@ -6,12 +6,12 @@ export const KMH = 4.5; // display factor
 
 export const bus = new Phaser.Events.EventEmitter();
 
-export interface HaulClass { name: string; trailers: number[]; mult: number; rank: number; }
+export interface HaulClass { name: string; trailers: number[]; payloadTonnes: number; mult: number; rank: number; }
 export const CLASSES: HaulClass[] = [
-  { name: 'Small load', trailers: [38], mult: 1.0, rank: 0 },
-  { name: 'Box trailer', trailers: [54], mult: 1.3, rank: 1 },
-  { name: 'Long hauler', trailers: [72], mult: 1.7, rank: 2 },
-  { name: 'Road train', trailers: [50, 50], mult: 2.3, rank: 3 },
+  { name: 'Small load', trailers: [38], payloadTonnes: 6, mult: 1.0, rank: 0 },
+  { name: 'Box trailer', trailers: [54], payloadTonnes: 14, mult: 1.3, rank: 1 },
+  { name: 'Long hauler', trailers: [72], payloadTonnes: 24, mult: 1.7, rank: 2 },
+  { name: 'Road train', trailers: [50, 50], payloadTonnes: 38, mult: 2.3, rank: 3 },
 ];
 export const RANKS = [
   { name: 'Rookie', at: 0 },

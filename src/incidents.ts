@@ -122,6 +122,7 @@ export class Incidents {
     if (s > stopAt - 160) s = Math.max(60, stopAt - 160);
     for (let i = 0; i < 8 && !this.tr.laneFree(seg, s, lane, 32); i++) s = Math.max(40, s - 70);
     const v = this.tr.add(type, seg, s, lane, 300);
+    v.incidentResponder = true;
     v.emergency = true; v.ignoreBlock = true; v.siren = true; v.vDes = 400; v.local = false; v.stopAt = stopAt; v.resp = inc;
     if (type === 'police') inc.police = v; else inc.tow = v;
   }

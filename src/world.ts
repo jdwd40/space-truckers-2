@@ -13,6 +13,8 @@ import { Landmarks } from './scenery';
 import { Favours } from './favours';
 import { ZoneDef, ZoneId, ZONE_BY_ID, ZoneLook, zoneAt, lookOf, lerpLook } from './zones';
 import { SetPieces, PieceKind } from './setpieces';
+import { calculateHandling, calculateServiceBrake } from './handling';
+import { advanceCameraOverview, calculateCameraTargets } from './camera';
 
 const STATION_R = 1250;
 const CARGO: Record<string, string[]> = {
@@ -68,6 +70,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** simulation time owed to the traffic step loop */
   acc = 0;
   camH = 0; zoomCur = 0.9; miniZoom = 0.05;
+  cameraOverview = 0;
+  private incidentCameraPoints: Pt[] = [];
   /** world-space direction of one screen-space unit to the right and down, from the camera rotation: shadows fall that way */
   shX = { x: 1, y: 0 }; shY = { x: 0, y: 1 };
   dockS = new Map<Seg, number>();
@@ -77,6 +81,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   holdT = 0; overT = 0; policeCool = 8; overWarnT = 0; autoHold = false; leavingLayby = false; laybySlot: { s: number; occ: unknown } | null = null;
   escort: { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; s: number; seg: Seg; lat: number; v: number; t: number } | null = null;
   redAhead = false; limit = 5; blink = 0; routeRedraw = 0; remain = 0; nav: NavInfo | null = null;
+  routeDiverted = false;
+  private navigationT = 0;
   costs: Record<string, number> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; incG!: Phaser.GameObjects.Graphics; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
@@ -506,6 +512,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const p = this.player;
     const tr = G.job && G.job.stage === 'deliver' ? CLASSES[G.job.cls].trailers : [];
     p.setTrailers(tr);
+    this.applyUpgrades();
     if (!p.gfx) this.addVis(p); else this.buildUnits(p);
   }
 
@@ -570,8 +577,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   brakeMin(v: Veh): number | null {
     if (v.state === 'crashed') return v.v > 0 ? -430 : null;
     if (!G.braking) return null;
-    for (const st of v.seg.stops) { const d = st.s - v.s; if (d > -1 && d < 1000 && st.sig.state(st.group) !== 'G') return Math.min(-30, -(v.v * v.v) / (2 * Math.max(30, d - 12)) * 0.6); }
-    return v.v > 0 ? -260 : null;
+    for (const st of v.seg.stops) { const d = st.s - v.s; if (d > -1 && d < 1000 && st.sig.state(st.group) !== 'G') return calculateServiceBrake(v.v, v, d); }
+    return calculateServiceBrake(v.v, v);
   }
   onTrans(v: Veh, t: Trans) {
     if (t.type === 'exit') {
@@ -640,9 +647,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     return true;
   }
   baseAMax = 0;
-  /** push the garage upgrades onto the player's rig */
+  /** Recompute from the unmodified cab, never from an already load-scaled limit. */
   applyUpgrades() {
-    if (this.baseAMax > 0) this.player.aMax = this.baseAMax * cabAccel();
+    if (this.baseAMax <= 0) return;
+    const payload = G.job?.stage === 'deliver' ? CLASSES[G.job.cls].payloadTonnes : 0;
+    Object.assign(this.player, calculateHandling(this.baseAMax, cabAccel(), payload));
   }
   private onBump(fee: number, atFault: boolean, saved = false) {
     G.money = Math.max(0, G.money - fee); G.fines += fee; save();
@@ -662,14 +671,27 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   computeRoute(announce: boolean) {
     const p = this.player;
     const goals = this.goals();
-    if (!goals.length) { p.route = []; p.goal = null; this.drawRoute(); return; }
+    if (!goals.length) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
-    const r = this.net.route(p.seg, p.s, goals, side);
+    const r = this.net.route(p.seg, p.s, goals, side, true);
+    this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
     if (!r && this.fuelTarget) { this.fuelTarget = null; this.computeRoute(announce); return; }
     if (announce) toast('Route updated', '#9fe9ff', 1400);
     this.drawRoute();
+  }
+  /** Reconsider congestion at most every five seconds, never while committed to a slip lane. */
+  private refreshNavigation(dt: number) {
+    this.navigationT -= dt;
+    if (this.navigationT > 0 || this.pstate !== 'drive' || this.player.state === 'crashed') return;
+    this.navigationT = 5;
+    const p = this.player, next = p.route.find((t) => t.type === 'exit');
+    if (p.pend !== null || this.armed || p.lane < 0 || p.lane >= p.seg.lanes) return;
+    if (this.routeDiverted && next?.from === p.seg && next.fromS - p.s < 1800) return;
+    const wasDiverted = this.routeDiverted;
+    this.computeRoute(false);
+    if (this.routeDiverted && !wasDiverted) toast('Traffic ahead — sat-nav has found a diversion', '#9fe9ff', 3500);
   }
   private computeCosts() {
     for (const a of this.net.stations) for (const b of this.net.stations) {
@@ -933,6 +955,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private playerLogic(dt: number, prevS: number, prevSeg: Seg) {
     const p = this.player, seg = p.seg;
     if (G.mode !== 'drive') return;
+    this.refreshNavigation(dt);
     // fuel use
     const ds = p.seg === prevSeg ? Math.max(0, p.s - prevS) : p.v * dt;
     if (G.fuel > 0) {
@@ -1112,7 +1135,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (next.svc) title = `Fuel stop: ${next.svc.name}`;
     else if (next.kind === 'uturn') title = `Turn back to ${next.label}`;
     else title = `${next.label}`;
-    const sub = next.kind === 'uturn' ? 'Exit right, loop over the road' : `Exit ${side > 0 ? 'right' : 'left'}`;
+    const sub = next.kind === 'uturn' ? 'Exit right, loop over the road' : `${this.routeDiverted ? 'Diversion · ' : ''}Exit ${side > 0 ? 'right' : 'left'}`;
     let lanes = lanesAll, aux = 0;
     if (next.from === seg && lanes) {
       if (d < 3200) lanes = lanes.map((_, i) => (side > 0 ? i === seg.lanes - 1 : i === 0));
@@ -1124,19 +1147,37 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   private updateCamera(dt: number) {
     const cam = this.cameras.main, p = this.player;
-    const base = clamp(Math.min(cam.width, cam.height) / 720, 0.5, 1.6);
-    const k = clamp(p.v / 345, 0, 1);
-    const tz = base * (1.1 - 0.3 * k);
-    this.zoomCur += (tz - this.zoomCur) * Math.min(1, dt * 1.2);
     const ph = p.seg.path.at(p.s).h;
     this.camH += angDiff(this.camH, ph) * Math.min(1, dt * 2.2);
+    const incident = this.inc.playerIncident();
+    // playerIncident() includes the seven-second clear phase: restore as soon as the rig is released.
+    const overviewActive = p.state === 'crashed' && incident?.phase !== 'clear';
+    this.cameraOverview = advanceCameraOverview(this.cameraOverview, overviewActive, dt);
+    if (overviewActive && incident) {
+      // Casualties can coast into the next section before stopping. Each s is local to its own segment,
+      // so build the envelope in world space without borrowing incident.front/rear (also section-local).
+      const casualties = [p, ...incident.cas.filter((v) => !v.dead && v !== p)];
+      this.incidentCameraPoints = [];
+      for (const v of casualties) {
+        const halfWidth = v.seg.lanes * LW / 2 + LW;
+        this.incidentCameraPoints.push({ x: v.x, y: v.y }, v.back(v.totLen));
+        // Crews park up to 110 ahead; cones start 430 behind. Include another 420 for the forming queue.
+        for (const s of [v.s + 170, v.s - v.totLen - 850]) for (const lat of [-halfWidth, halfWidth])
+          this.incidentCameraPoints.push(v.seg.path.at(s, lat));
+      }
+    } else if (this.cameraOverview < 0.001) this.incidentCameraPoints = [];
+    const input = { width: cam.width, height: cam.height, speed: p.v, heading: this.camH, front: p,
+      rigCenter: p.back(p.totLen / 2), rigLength: p.totLen, currentZoom: this.zoomCur,
+      overview: this.cameraOverview, scenePoints: this.incidentCameraPoints };
+    const tz = calculateCameraTargets(input).zoom;
+    this.zoomCur += (tz - this.zoomCur) * Math.min(1, dt * 1.2);
+    const target = calculateCameraTargets({ ...input, currentZoom: this.zoomCur });
     cam.setZoom(this.zoomCur);
     cam.setRotation(-Math.PI / 2 - this.camH);
     // screen = R(rotation) * world, so a screen-space offset is R(-rotation) in the world
     const cr = -Math.PI / 2 - this.camH, cc = Math.cos(cr), cs = Math.sin(cr);
     this.shX = { x: cc, y: -cs }; this.shY = { x: cs, y: cc };
-    const ahead = (cam.height * 0.2) / this.zoomCur;
-    cam.centerOn(p.x + Math.cos(this.camH) * ahead, p.y + Math.sin(this.camH) * ahead);
+    cam.centerOn(target.x, target.y);
     // stars
     this.stars.setScale(1 / this.zoomCur);
     this.stars.tilePositionX = cam.scrollX * 0.08 * this.zoomCur;

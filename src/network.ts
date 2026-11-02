@@ -26,7 +26,7 @@ export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: Si
 export interface LimitSign { seg: Seg; s: number; limit: number }
 export interface Crossing { x: number; y: number; h: number; sig: Signal; corners: Pt[]; lights: { seg: Seg; s: number; group: number }[] }
 export interface Goal { seg: Seg; s: number }
-export interface Route { trans: Trans[]; goal: Goal; cost: number }
+export interface Route { trans: Trans[]; goal: Goal; cost: number; diverted?: boolean }
 export interface Camera { seg: Seg; s: number; x: number; y: number }
 
 export const GREEN = 0x1d7a4c, BLUE = 0x1f5fb8, POLICE = 0x283a8f;
@@ -331,11 +331,11 @@ export class Network {
     // Lane profiles: [[fraction of the road where the section ends, lanes], ...] per direction.
     // Section joins are placed clear of services, lay-bys, exits and signals (validate() checks this).
     const M1 = this.road('M1', P([[-15000, 1500], [-13700, 1500], [-12400, 1500], [-11100, 1500], [-9500, 900], [-7600, -200], [-5800, -300], [-4200, 0], [-2600, 0], [0, 0], [2600, 0], [4200, 0], [6000, 300], [8200, 600], [10200, -300], [12400, -1100], [15000, -1000]]),
-      [[0.2838, 4], [0.672, 5], [1, 4]], [[0.3114, 4], [0.6617, 5], [1, 4]]);
+      [[0.2838, 5], [0.672, 6], [1, 5]], [[0.3114, 5], [0.6617, 6], [1, 5]]);
     const M2 = this.road('M2', P([[900, -15000], [900, -13700], [900, -12400], [900, -11100], [300, -9300], [-700, -7400], [-500, -5600], [0, -4200], [0, -2600], [0, 0], [0, 2600], [0, 4200], [700, 6000], [900, 8200], [-300, 10300], [-600, 12500], [0, 15000]]),
-      [[0.2858, 4], [0.677, 5], [1, 4]], [[0.3115, 4], [0.6615, 5], [1, 4]]);
+      [[0.2858, 5], [0.677, 6], [1, 5]], [[0.3115, 5], [0.6615, 6], [1, 5]]);
     const OR = this.road('Ore Road', P([[1100, 15800], [2600, 15800], [5200, 15000], [8200, 12900], [11000, 9600], [13200, 6200], [14900, 3200], [15900, 1200], [15900, -200]]),
-      [[0.25, 3], [0.6, 2], [1, 3]], [[0.35, 3], [0.72, 2], [1, 3]]);
+      [[0.25, 4], [0.6, 3], [1, 4]], [[0.35, 4], [0.72, 3], [1, 4]]);
     this.gates(M1, terra, jove, 1.0);
     this.gates(M2, kestrel, vesta, 1.2);
     this.gates(OR, vesta, jove, 5);
@@ -347,17 +347,17 @@ export class Network {
 
     // ---- the wider network: three more destinations, six more highways with 2, 3 and 4 lane sections
     const AU = this.road('Aurora Way', P([[-16000, 500], [-16000, -1500], [-16100, -3500], [-15700, -6000], [-15900, -8500], [-15500, -11000], [-15000, -12500], [-15000, -13500]]),
-      [[0.35, 3], [0.7, 4], [1, 3]], [[0.4, 3], [0.765, 4], [1, 3]]);
+      [[0.35, 4], [0.7, 5], [1, 4]], [[0.4, 4], [0.765, 5], [1, 4]]);
     const HR = this.road('Harbor Run', P([[-14000, -14500], [-12500, -14500], [-10500, -15200], [-8000, -15500], [-5500, -15200], [-3000, -15800], [-1500, -16000], [-100, -16000]]),
-      [[0.58, 3], [1, 4]], [[0.52, 4], [1, 3]]);
+      [[0.58, 4], [1, 5]], [[0.52, 5], [1, 4]]);
     const FL = this.road('Frost Line', P([[1900, -16000], [3600, -16000], [6000, -15600], [8500, -15000], [10500, -14400], [12200, -14100], [14000, -14000]]),
-      [[0.643, 3], [1, 2]], [[0.42, 2], [1, 3]]);
+      [[0.643, 4], [1, 3]], [[0.42, 3], [1, 4]]);
     const IR = this.road('Ice Road', P([[15000, -13000], [15000, -11000], [15500, -9000], [15200, -7000], [15700, -5000], [16000, -3500], [16000, -2000]]),
-      [[0.373, 3], [0.65, 2], [1, 3]], [[0.25, 2], [1, 3]]);
+      [[0.373, 4], [0.65, 3], [1, 4]], [[0.25, 3], [1, 4]]);
     const SH = this.road('Slag Highway', P([[-1000, 16000], [-2500, 16000], [-5000, 16500], [-7500, 16000], [-10000, 15500], [-12000, 15000], [-13500, 15000]]),
-      [[0.38, 4], [0.702, 3], [1, 4]], [[0.49, 3], [1, 4]]);
+      [[0.38, 5], [0.702, 4], [1, 5]], [[0.49, 4], [1, 5]]);
     const CR = this.road('Cinder Road', P([[-14500, 14000], [-14500, 12000], [-15000, 10000], [-14800, 8000], [-15600, 6000], [-15900, 4500], [-16000, 2500]]),
-      [[0.675, 3], [1, 2]], [[0.45, 2], [1, 3]]);
+      [[0.675, 4], [1, 3]], [[0.45, 3], [1, 4]]);
     this.gates(AU, terra, harbor, 1.7);
     this.gates(HR, harbor, kestrel, 2.6);
     this.gates(FL, kestrel, glacier, 2.8);
@@ -367,7 +367,14 @@ export class Network {
     for (const r of [AU, HR, FL, SH]) for (const s of both(r)) s.localOK = true;
     for (const r of [IR, CR]) for (const s of both(r)) { s.trucky = true; s.density = 0.55; }
 
-    // the central interchange sits inside the middle (5-lane) sections of M1 and M2
+    // Outer orbital links have their own station gates: journeys need not traverse the central hubs.
+    const polar = this.road('Polar Express', P([[-15000, -15500], [-15000, -17500], [-12000, -18500], [-6500, -19000], [0, -19500], [6500, -19000], [12000, -18000], [15000, -16700], [15000, -15000]]), 3, 3);
+    const belt = this.road('Ember Belt', P([[-14500, 16000], [-14500, 17700], [-11000, 19000], [-5000, 19500], [2500, 19500], [9500, 18300], [16000, 14500], [19500, 8500], [20000, 3500], [19000, -1000], [17000, -1000]]), 3, 3);
+    this.gates(polar, harbor, glacier, 1.5);
+    this.gates(belt, ember, jove, 1.8);
+    for (const rd of [polar, belt]) for (const seg of both(rd)) seg.localOK = true;
+
+    // the central interchange sits inside the middle (6-lane) sections of M1 and M2
     const A = 520, B = 1320;
     const E = this.nearestIn(M1.f, 0, 0).seg, W = this.nearestIn(M1.r, 0, 0).seg, S = this.nearestIn(M2.f, 0, 0).seg, N = this.nearestIn(M2.r, 0, 0).seg;
     const sAt = (seg: Seg, x: number, y: number) => seg.path.nearest(x, y).s;
@@ -462,6 +469,45 @@ export class Network {
 
     cam(M1.f, 19300); cam(M1.r, 11300); cam(M2.f, 19400); cam(M2.r, 11200);
 
+    // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
+    // Opposing directions use separate decks where the inner slips cross the other carriageway.
+    // Each whole link is grade-separated, including crossings of the other motorway/bypass.
+    const meridian = this.road('Meridian Bypass', P([[-1900, 1900], [-700, 3100], [1200, 3100], [2700, 1900]]), 2, 2);
+    const zenith = this.road('Zenith Bypass', P([[1900, -1900], [3500, -700], [3500, 1200], [1900, 2700]]), 2, 2);
+    const connectBypass = (rd: Road, chain: Seg[], host: Seg, exitX: number, exitY: number, mergeX: number, mergeY: number, side: 1 | -1, bypassSide: 1 | -1, level: number) => {
+      const start = chain[0], end = chain[chain.length - 1];
+      for (const seg of chain) { seg.level = level; seg.localOK = true; }
+      const exitS = sAt(host, exitX, exitY), mergeS = sAt(host, mergeX, mergeY);
+      this.ramp(host, exitS, side, start, 300, bypassSide, 0.4, { level, limit: 4, label: rd.name, kind: 'jct', dir: side > 0 ? 'R' : 'L' });
+      // The bypass is a through road, not a cul-de-sac with an optional last-chance exit.
+      // Drop the outer lane using the normal taper; lane 0 continues into the return ramp.
+      const p0 = end.path.at(end.len, end.laneLat(0)), p3 = this.auxPt(host, mergeS, side);
+      const c = Math.hypot(p3.x - p0.x, p3.y - p0.y) * 0.4;
+      const d0 = dirv(p0.h), d3 = dirv(p3.h);
+      const ret = this.seg(`${rd.name} return to ${host.name}`, new Path(bezier(p0,
+        { x: p0.x + d0.x * c, y: p0.y + d0.y * c },
+        { x: p3.x - d3.x * c, y: p3.y - d3.y * c }, p3, 140)), 1, 'ramp', level, 4);
+      end.drop = end.lanes - ret.lanes;
+      end.next = ret; ret.prev = end;
+      end.endT = this.addT({ type: 'end', from: end, fromS: end.len, to: ret, toS: 0, side: 1,
+        latShift: (end.lanes - ret.lanes) * LW / 2, label: host.name, kind: 'link', dir: 'S' });
+      const am: Aux = { side, s0: mergeS, s1: mergeS + 560, type: 'merge' };
+      host.aux.push(am);
+      ret.endT = this.addT({ type: 'merge', from: ret, fromS: ret.len, to: host, toS: mergeS,
+        side, latShift: 0, label: host.name, kind: 'link', dir: 'S', aux: am });
+      am.trans = ret.endT;
+      for (const back of [1700, 700]) this.signs.push({ ...this.place(host, exitS - back), kind: 'gantry', side, panels: [
+        { side: side > 0 ? 'R' : 'L', color: GREEN, title: rd.name, sub: `Avoid central interchange · ${dist(back)}`, arrow: side * 45 },
+        { side: 'C', color: GREEN, title: host.name, sub: 'Central interchange', arrow: 0 },
+      ] });
+      this.signs.push({ seg: host, s: exitS + 40, kind: 'side', side, panels: [{ side: side > 0 ? 'R' : 'L', color: GREEN, title: rd.name, sub: 'Rejoins beyond interchange', arrow: side * 45 }] });
+      this.signs.push({ seg: end, s: end.len - 1450, kind: 'gantry', side: 1, panels: [{ side: 'C', color: GREEN, title: host.name, sub: 'Return to motorway · Merge left', arrow: 0 }] });
+    };
+    connectBypass(meridian, meridian.f, E, -2500, 0, 4000, 0, 1, -1, 2);
+    connectBypass(meridian, meridian.r, W, 3800, 0, -3000, 0, -1, 1, 1);
+    connectBypass(zenith, zenith.f, S, 0, -2500, 0, 4000, -1, 1, 3);
+    connectBypass(zenith, zenith.r, N, 0, 3800, 0, -2700, 1, -1, 4);
+
     // welcome / route confirmation gantries at departures
     for (const st of this.stations) for (const seg of st.dep) {
       let last = seg, total = seg.len; while (last.next) { last = last.next; total += last.len; }
@@ -514,15 +560,41 @@ export class Network {
 
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
 
-  route(seg: Seg, s: number, goals: Goal[], auxSide = 0): Route | null {
+  /** Distance-equivalent cost of the actual traversed interval, not the whole segment. */
+  private routingCost(seg: Seg, s0: number, s1: number, avoidTraffic: boolean): number {
+    let cost = Math.max(0, s1 - s0);
+    if (!avoidTraffic || s1 <= s0) return cost;
+    const blocks = seg.blocks.filter((b) => Number.isInteger(b.lane) && b.lane >= 0 && b.lane < seg.lanes && b.s0 < s1 && b.s1 > s0);
+    // Sweep clipped block endpoints, counting each closed lane once even for overlapping incidents.
+    const points = [...new Set([s0, s1, ...blocks.flatMap((b) => [Math.max(s0, b.s0), Math.min(s1, b.s1)])])].sort((a, b) => a - b);
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      const closed = new Set(blocks.filter((block) => block.s0 < b && block.s1 > a).map((block) => block.lane)).size;
+      // Finite penalties preserve a last-resort route if no usable alternative exists.
+      cost += (b - a) * (closed === seg.lanes ? 40 : 6 * closed / (seg.lanes - closed));
+    }
+    // Ignore the player's speed, parked/service/auxiliary traffic, and isolated slow trucks.
+    const traffic = seg.veh.filter((v) => !v.dead && !v.isPlayer && v.s >= s0 && v.s < s1 &&
+      v.lane >= 0 && v.lane < seg.lanes && v.vDes > 0 &&
+      ['drive', 'held', 'stopped', 'broken', 'crashed'].includes(v.state));
+    const slow = traffic.filter((v) => v.v < v.vDes * 0.45);
+    if (slow.length >= Math.max(4, seg.lanes) && slow.length >= traffic.length / 2) {
+      cost += slow.reduce((sum, v) => sum + 800 * (1 - Math.max(0, v.v) / v.vDes), 0);
+    }
+    return cost;
+  }
+
+  /** Opt in to live congestion costs; leave false for geometric job distances/prices. */
+  route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false): Route | null {
+    const cost = (road: Seg, from: number, to: number) => this.routingCost(road, from, to, avoidTraffic);
     let best = Infinity, bestT: Trans | null = null, bestG: Goal | null = null, direct = false;
-    for (const g of goals) if (g.seg === seg && g.s >= s - 1 && g.s - s < best) { best = g.s - s; bestG = g; direct = true; }
+    for (const g of goals) if (g.seg === seg && g.s >= s - 1 && cost(seg, s, g.s) < best) { best = cost(seg, s, g.s); bestG = g; direct = true; }
     const dist = new Map<Trans, number>(), prev = new Map<Trans, Trans | null>(), done = new Set<Trans>();
     for (const t of seg.outs) {
       const ahead = t.fromS - s;
       if (ahead < -1) continue;
       if (t.type === 'exit' && ahead < 90 && auxSide !== t.side) continue;
-      dist.set(t, Math.max(0, ahead) + (t.pen ?? 0)); prev.set(t, null);
+      dist.set(t, cost(seg, s, t.fromS) + (t.pen ?? 0)); prev.set(t, null);
     }
     for (;;) {
       let cur: Trans | null = null, cd = Infinity;
@@ -530,17 +602,18 @@ export class Network {
       if (!cur || cd >= best) break;
       done.add(cur);
       const ns = cur.to, s0 = cur.toS;
-      for (const g of goals) if (g.seg === ns && g.s >= s0 && cd + g.s - s0 < best) { best = cd + g.s - s0; bestG = g; bestT = cur; direct = false; }
+      for (const g of goals) if (g.seg === ns && g.s >= s0 && cd + cost(ns, s0, g.s) < best) { best = cd + cost(ns, s0, g.s); bestG = g; bestT = cur; direct = false; }
       for (const u of ns.outs) {
         if (u.fromS < s0 + (u.type === 'exit' ? 60 : -1)) continue;
-        const nd = cd + u.fromS - s0 + (u.pen ?? 0);
+        const nd = cd + cost(ns, s0, u.fromS) + (u.pen ?? 0);
         if (nd < (dist.get(u) ?? Infinity)) { dist.set(u, nd); prev.set(u, cur); }
       }
     }
     if (!bestG) return null;
     const list: Trans[] = [];
     if (!direct) { let t: Trans | null = bestT; while (t) { list.unshift(t); t = prev.get(t) ?? null; } }
-    return { trans: list, goal: bestG, cost: best };
+    const diverted = seg.road.includes('Bypass') || list.some((t) => t.label.includes('Bypass') || t.to.road.includes('Bypass'));
+    return { trans: list, goal: bestG, cost: best, diverted };
   }
 
   routePoints(r: Route, seg: Seg, s: number, step = 80): Pt[] {

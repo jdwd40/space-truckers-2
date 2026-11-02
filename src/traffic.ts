@@ -10,13 +10,13 @@ export const TRAFFIC_CFG = {
   /** same, on the designated haulage roads */
   truckShareTrucky: 0.72,
   /** how many vehicles are kept alive around the player (within the view plus ~1.9 km). The main lever for how busy roads look. */
-  nearTarget: 72,
+  nearTarget: 108,
   /** multiplier on nearTarget around stations and the central interchange / on open stretches between them */
   hubBoost: 1.35,
   quietFactor: 0.7,
   /** chance that a freshly spawned truck brings a convoy of 2-3 more behind it */
   convoyChance: 0.22,
-  /** hard caps so a busy network never runs away */
+  /** Hard ordinary-NPC budget; the player and explicit incident responders use add() outside this pool. */
   maxVehicles: 500,
   maxLocals: 560,
   initialLocals: 300,
@@ -52,7 +52,7 @@ export class Veh {
   static NID = 1;
   id = Veh.NID++;
   cab: number; w: number; trailers: number[] = []; totLen = 0;
-  vDes: number; aMax: number; bComf = 150; T: number;
+  vDes: number; aMax: number; bComf = 150; maxBrake = 380; T: number;
   latT: number | null = null;
   route: Trans[] = []; goal: Goal | null = null; dest: string | null = null; svcTarget: Services | null = null;
   pend: number | null = null; pendT = 0; pendWait = 0; pendMand = false; sig = 0; lcCool = 0;
@@ -66,12 +66,16 @@ export class Veh {
   isPlayer: boolean; lights = false; gfx: any = null; decideT = Math.random() * 0.6;
   hazard = false; siren = false; smoke = false; crashAng = 0; goShoulder = false; stopAt: number | null = null;
   ignoreBlock = false; emergency = false; reckless = false; squeeze = false; lastLC = -99; stopT = 0; giveUp = 0; resp: unknown = null; partner: Veh | null = null;
+  /** Explicitly dispatched incident crew stay outside the ordinary population budget, even after release. */
+  incidentResponder = false;
   /** dock gate currently holding this ship, and the one it was last waved through */
   gate: Gate | null = null; gateDone: Gate | null = null;
   /** the segment this ship was on before its current one, where it left it and where it joined this one: the trailers may still be back there */
   prevSeg: Seg | null = null; prevS = 0; enterS = 0;
   /** far from the camera: planned and moved only every fourth step, with four times the step */
   far = false;
+  /** Stagger graph searches rather than recomputing a route on every simulation step. */
+  routeRefresh = rand(8, 14);
   constructor(public type: VType, public seg: Seg, public s: number, public lane: number, public v: number) {
     const sp = SPEC[type];
     this.cab = sp.cab; this.w = sp.w; this.aMax = sp.a; this.T = sp.T;
@@ -170,28 +174,33 @@ export class Traffic {
   }
 
   // ---------- spawning ----------
+  /** Explicit player / incident insertion. Ambient traffic must use the budgeted, safe spawnNPC path. */
   add(type: VType, seg: Seg, s: number, lane: number, v?: number): Veh {
     const veh = new Veh(type, seg, s, lane, 0);
     veh.v = v ?? Math.min(veh.vDes, SPEEDS[seg.limitAt(s)]) * 0.9;
     veh.resetTrail();
+    return this.register(veh);
+  }
+  private register(veh: Veh): Veh {
     this.vs.push(veh);
-    seg.veh.push(veh);
-    if (type === 'police') this.policeN++;
+    veh.seg.veh.push(veh);
+    if (veh.type === 'police') this.policeN++;
     this.onAdd(veh);
     return veh;
   }
   private randType(seg: Seg, hub = false): VType {
     const r = Math.random();
-    if (seg.kind === 'avenue') return r < 0.5 ? 'mite' : r < 0.68 ? 'taxi' : r < 0.85 ? 'pod' : r < 0.93 ? 'van' : 'bus';
-    if (r < 0.04 && this.policeN < TRAFFIC_CFG.maxPolice) return 'police';
-    // local shuttles run between the hubs
-    if (hub && !seg.trucky && r < 0.09) return 'shuttle';
+    if (seg.kind === 'avenue') return r < 0.23 ? 'mite' : r < 0.40 ? 'taxi' : r < 0.52 ? 'pod' : r < 0.65 ? 'van' : r < 0.83 ? 'shuttle' : r < 0.95 ? 'bus' : 'tow';
+    if (r < 0.025 && this.policeN < TRAFFIC_CFG.maxPolice) return 'police';
+    if (r < 0.08) return 'tow';
+    // Passenger services have a real presence at hubs; industrial corridors remain predominantly freight.
+    const passengerEnd = seg.trucky ? 0.17 : hub ? 0.30 : 0.21;
+    if (r < passengerEnd) return r < 0.08 + (passengerEnd - 0.08) * 0.65 ? 'shuttle' : 'bus';
     const q = Math.random();
-    if (Math.random() < (seg.trucky ? TRAFFIC_CFG.truckShareTrucky : TRAFFIC_CFG.truckShare)) {
+    if (r < passengerEnd + (seg.trucky ? TRAFFIC_CFG.truckShareTrucky : TRAFFIC_CFG.truckShare)) {
       return q < 0.31 ? 'rig' : q < 0.49 ? 'tanker' : q < 0.74 ? 'long' : 'train';
     }
-    if (seg.trucky) return q < 0.37 ? 'mite' : q < 0.53 ? 'pod' : q < 0.79 ? 'van' : 'bus';
-    return q < 0.31 ? 'mite' : q < 0.54 ? 'pod' : q < 0.68 ? 'sport' : q < 0.8 ? 'taxi' : q < 0.94 ? 'van' : 'bus';
+    return q < 0.27 ? 'mite' : q < 0.47 ? 'pod' : q < 0.61 ? 'sport' : q < 0.78 ? 'taxi' : 'van';
   }
   /** lane `lane` of seg no longer exists (or does not yet exist) at s: the outer lanes of a drop / gain taper */
   deadLane(seg: Seg, lane: number, s: number): boolean {
@@ -206,10 +215,17 @@ export class Traffic {
   }
   laneFree(seg: Seg, s: number, lane: number, len: number, behind = 120, ahead = 160): boolean {
     const lt = seg.laneLat(lane);
-    for (const o of seg.veh) {
-      if (Math.abs(o.lat - lt) > seg.laneW * 0.8 && Math.abs(o.targetLat() - lt) > seg.laneW * 0.8) continue;
-      if (o.s > s - len - behind && o.s - o.totLen < s + ahead) return false;
-    }
+    const occupied = (section: Seg, at: number, lat: number) => section.veh.some((o: Veh) => {
+      if (o.dead) return false;
+      const [lo, hi] = this.spanOf(o, true);
+      if (lo > lat + section.laneW * 0.4 || hi < lat - section.laneW * 0.4) return false;
+      return o.s > at - len - behind && o.s - o.totLen < at + ahead;
+    });
+    if (occupied(seg, s, lt)) return false;
+    const next = seg.endT;
+    if (next?.type === 'end' && occupied(next.to, next.toS + s - next.fromS, lt + next.latShift)) return false;
+    const prev = seg.prev?.endT;
+    if (prev?.to === seg && occupied(prev.from, prev.fromS + s - prev.toS, lt - prev.latShift)) return false;
     return true;
   }
   private inAux(seg: Seg, s: number): boolean {
@@ -221,7 +237,17 @@ export class Traffic {
   busyAt(x: number, y: number): number {
     return this.zones.some((z) => Math.hypot(x - z.x, y - z.y) < z.r * 0.6) ? TRAFFIC_CFG.hubBoost : TRAFFIC_CFG.quietFactor;
   }
+  private spawnRoom(local: boolean): boolean {
+    // All ordinary spawn paths (initial fill, docks, locals and convoy followers) share this budget.
+    let count = 0, locals = 0;
+    for (const v of this.vs) if (!v.dead && !v.isPlayer && !v.incidentResponder) { count++; if (v.local) locals++; }
+    if (count >= TRAFFIC_CFG.maxVehicles || (local && locals >= TRAFFIC_CFG.maxLocals)) return false;
+    // Background departures cannot consume the camera-local pool, even after a long session.
+    const reserve = Math.min(TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * TRAFFIC_CFG.hubBoost), Math.floor(TRAFFIC_CFG.maxVehicles * 0.4));
+    return local || count - locals < TRAFFIC_CFG.maxVehicles - reserve;
+  }
   spawnNPC(seg: Seg, s: number, local: boolean, forceLane?: number, forceType?: VType, tight = false, speed?: number): Veh | null {
+    if (!this.spawnRoom(local)) return null;
     const q = seg.path.at(s);
     const type = forceType ?? this.randType(seg, this.busyAt(q.x, q.y) > 1);
     const n = seg.lanes;
@@ -232,8 +258,22 @@ export class Traffic {
     if (forceLane !== undefined) lane = forceLane;
     else if (this.dropping(seg, lane, s) || this.deadLane(seg, lane, s)) lane = Math.max(0, n - 1 - Math.max(seg.drop, seg.gain));
     const len = SPEC[type].cab + SPEC[type].trailers.reduce((a, t) => a + t + HITCH, 0);
-    if (!this.laneFree(seg, s, lane, len, tight ? 12 : 120, tight ? 12 : 160)) return null;
-    const v = this.add(type, seg, s, lane, speed);
+    if (!Number.isFinite(s) || s < 0 || s > seg.len || !Number.isInteger(lane)) return null;
+    const available = (candidate: number) => {
+      if (candidate < 0 || candidate >= n) {
+        if ((candidate !== -1 && candidate !== n) || !seg.auxAt(s, candidate < 0 ? -1 : 1)) return false;
+      } else if (this.dropping(seg, candidate, s) || this.deadLane(seg, candidate, s) || this.deadLane(seg, candidate, s - len)) return false;
+      if (seg.blocks.some(b => b.lane === candidate && b.s1 > s - len - 120 && b.s0 < s + 160)) return false;
+      return this.laneFree(seg, s, candidate, len, tight ? 12 : 120, tight ? 12 : 160);
+    };
+    if (!available(lane)) {
+      if (forceLane !== undefined) return null;
+      const other = Array.from({ length: n - 1 }, (_, i) => (lane + i + 1) % n).find(available);
+      if (other === undefined) return null;
+      lane = other;
+    }
+    const v = new Veh(type, seg, s, lane, 0);
+    v.v = speed ?? Math.min(v.vDes, SPEEDS[seg.limitAt(s)]) * 0.9;
     v.local = local;
     // a ship leaving a hangar is hidden by the hangar floor until it reaches the door, so it needs no fade-in: with one
     // it was still see-through a hundred units outside, right behind a rig that had just undocked
@@ -241,11 +281,14 @@ export class Traffic {
     v.reckless = type === 'pod' || type === 'sport' ? Math.random() < 0.5 : Math.random() < 0.03;
     if (seg.kind !== 'avenue') {
       const options = this.net.stations.filter((st) => st !== seg.depStation);
+      if (!options.length) return null;
       v.dest = pick(options).id;
       this.reroute(v);
-      if (!v.goal) { v.dead = true; return null; }
+      if (!v.goal) return null;
       if (!local && type !== 'police' && Math.random() < (type === 'mite' ? 0.12 : 0.3)) this.pickServices(v);
+      if (!v.goal) return null;
     }
+    this.register(v);
     const truck = type === 'rig' || type === 'long' || type === 'tanker' || type === 'train';
     if (truck && forceType === undefined && seg.kind === 'motorway' && Math.random() < TRAFFIC_CFG.convoyChance) this.convoy(v);
     return v;
@@ -282,44 +325,52 @@ export class Traffic {
     const goals = this.goalsFor(v);
     if (!goals.length) { v.route = []; v.goal = null; return; }
     const side = v.lane >= v.seg.lanes ? 1 : v.lane < 0 ? -1 : 0;
-    const r = this.net.route(v.seg, v.s, goals, side);
+    const r = this.net.route(v.seg, v.s, goals, side, true);
+    v.routeRefresh = rand(8, 14);
     v.route = r ? r.trans : [];
     v.goal = r ? r.goal : null;
   }
   populate() {
-    for (let i = 0; i < TRAFFIC_CFG.initialLocals; i++) this.spawnLocal(true);
+    const initialTarget = Math.min(TRAFFIC_CFG.initialLocals, TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * this.busyAt(this.view.x, this.view.y)), Math.floor(TRAFFIC_CFG.maxVehicles * 0.4));
+    for (let i = 0; i < TRAFFIC_CFG.initialLocals && this.spawnRoom(true); i++) {
+      if (this.vs.filter(v => !v.dead && v.local).length >= initialTarget) break;
+      this.spawnLocal(true);
+    }
+    // Round-robin roads AND their sections: the larger graph must not spend its entire budget on M1.
+    const roads = new Map<string, { seg: Seg; phase: number; remaining: number }[]>();
     for (const seg of this.net.segs) {
       if (seg.kind !== 'motorway' && seg.kind !== 'avenue') continue;
       const gap = (seg.kind === 'avenue' ? 300 : (seg.trucky ? 1900 : 520) / Math.max(0.5, seg.density)) / TRAFFIC_CFG.density / 1.4;
-      for (let s = 300; s < seg.len - 300; s += rand(gap * 0.6, gap * 1.4)) {
-        if (this.inAux(seg, s)) continue;
-        this.spawnNPC(seg, s, false);
+      const sections = roads.get(seg.road) ?? [];
+      sections.push({ seg, phase: Math.random(), remaining: Math.max(0, Math.ceil((seg.len - 600) / gap)) });
+      roads.set(seg.road, sections);
+    }
+    while (roads.size && this.spawnRoom(false)) {
+      for (const [name, sections] of roads) {
+        if (!this.spawnRoom(false)) break;
+        const at = sections.shift()!;
+        if (at.remaining-- > 0) {
+          // Low-discrepancy sampling covers the entire section even when only a few slots remain.
+          const s = 300 + at.phase * (at.seg.len - 600);
+          if (!this.inAux(at.seg, s)) this.spawnNPC(at.seg, s, false);
+          at.phase = (at.phase + 0.6180339887498949) % 1;
+          if (at.remaining > 0) sections.push(at);
+        }
+        if (!sections.length) roads.delete(name);
       }
     }
   }
   private spawnLocal(init = false) {
-    if (init) {
-      const z = pick(this.zones.flatMap((zz) => Array(zz.w).fill(zz)) as Zone[]);
-      const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * z.r;
-      const x = z.x + Math.cos(a) * r, y = z.y + Math.sin(a) * r;
-      let best: Seg | null = null, bs = 0, bd = 400;
-      for (const seg of this.localSegs) {
-        if (!seg.localOK || x < seg.path.minX - bd || x > seg.path.maxX + bd || y < seg.path.minY - bd || y > seg.path.maxY + bd) continue;
-        const nr = seg.path.nearest(x, y);
-        if (nr.d < bd) { bd = nr.d; best = seg; bs = nr.s; }
-      }
-      if (!best || bs < 400 || bs > best.len - 500 || this.inAux(best, bs)) return;
-      this.spawnNPC(best, bs, true);
-      return;
-    }
-    // sample road positions in a ring just outside the visible area, so new traffic rolls in rather than popping up
-    const vw = this.view, near = vw.r + 250, far = vw.r + 1900;
+    // Initial locals fill the player's neighbourhood, not random distant hubs. Later arrivals stay out of view.
+    const vw = this.view, near = init ? 0 : vw.r + 250, far = vw.r + 1900;
     const cands = this.localSegs.filter((seg) => vw.x > seg.path.minX - far && vw.x < seg.path.maxX + far && vw.y > seg.path.minY - far && vw.y < seg.path.maxY + far);
     if (!cands.length) return;
     for (let tries = 0; tries < 5; tries++) {
       const seg = pick(cands);
-      const s = rand(400, seg.len - 500);
-      if (s < 400) continue;
+      const centre = seg.path.nearest(vw.x, vw.y).s;
+      const lo = Math.max(400, centre - far), hi = Math.min(seg.len - 500, centre + far);
+      if (hi <= lo) continue;
+      const s = rand(lo, hi);
       const p = seg.path.at(s);
       const d = Math.hypot(p.x - vw.x, p.y - vw.y);
       if (d < near || d > far || this.inAux(seg, s)) continue;
@@ -330,13 +381,17 @@ export class Traffic {
     }
   }
 
+  private indexVehicles() {
+    for (const seg of this.net.segs) seg.veh.length = 0;
+    for (const v of this.vs) if (!v.dead) v.seg.veh.push(v);
+    for (const seg of this.net.segs) if (seg.veh.length > 1) seg.veh.sort((a, b) => a.s - b.s);
+  }
+
   // ---------- core update ----------
   update(dt: number) {
     for (const sig of this.net.signals) sig.t += dt;
     this.clock += dt;
-    for (const seg of this.net.segs) seg.veh.length = 0;
-    for (const v of this.vs) if (!v.dead) v.seg.veh.push(v);
-    for (const seg of this.net.segs) if (seg.veh.length > 1) seg.veh.sort((a, b) => a.s - b.s);
+    this.indexVehicles();
     this.gateUpdate(dt);
     for (const sv of this.net.services) this.svcUpdate(sv);
     // level of detail: ships well outside the view take one big step every fourth update instead of four small ones
@@ -352,11 +407,22 @@ export class Traffic {
       if (v.dead) continue;
       if (v.far) { if ((v.id & 3) === slot) this.move(v, dt * 4); } else this.move(v, dt);
     }
+    // Transitions changed segment membership: decisions and spawns must see the current occupancy.
+    this.indexVehicles();
     this.collide(dt);
+    let routeSearches = 0;
     for (const v of this.vs) {
       if (v.dead) continue;
       v.lcCool -= dt;
       if (!v.isPlayer) {
+        v.routeRefresh -= dt;
+        if (v.routeRefresh <= 0 && routeSearches < 2 && v.dest && v.state === 'drive' && !v.emergency &&
+          v.pend === null && v.lane >= 0 && v.lane < v.seg.lanes) {
+          const exit = v.route.find((t) => t.type === 'exit');
+          // Finish an imminent, already-signposted turn before reconsidering the next leg.
+          if (!(exit?.from === v.seg && exit.fromS - v.s < 1800)) { this.reroute(v); routeSearches++; }
+          else v.routeRefresh = 2;
+        }
         v.decideT -= dt;
         if (v.decideT <= 0) { v.decideT = 0.35 + Math.random() * 0.3; this.decide(v); }
         this.npcStates(v, dt);
@@ -369,7 +435,6 @@ export class Traffic {
       if (v.dead) { this.release(v); if (v.type === 'police') this.policeN--; this.onRemove(v); this.vs.splice(i, 1); }
     }
     // spawning
-    const count = this.vs.length;
     this.net.spawnSegs.forEach((sp, i) => {
       this.spawnT[i] -= dt;
       if (this.spawnT[i] > 0) return;
@@ -377,12 +442,12 @@ export class Traffic {
       if (dock && this.burst[i] > 0) {
         // a convoy rolling out of the hangar: ships leave a second or so apart at a crawl and bunch up on the way out
         this.spawnT[i] = rand(0.7, 1.2);
-        if (count < TRAFFIC_CFG.maxVehicles && this.spawnNPC(sp.seg, 25, false, undefined, undefined, false, 70)) this.burst[i]--;
+        if (this.spawnNPC(sp.seg, 25, false, undefined, undefined, false, 70)) this.burst[i]--;
         return;
       }
       this.spawnT[i] = (sp.rate * rand(0.6, 1.5) * (dock ? 1.05 : 1)) / TRAFFIC_CFG.density;
       if (dock && Math.random() < 0.22) this.burst[i] = 2 + Math.floor(Math.random() * 4);
-      if (count < TRAFFIC_CFG.maxVehicles) this.spawnNPC(sp.seg, 25, false);
+      this.spawnNPC(sp.seg, 25, false);
     });
     this.localT -= dt;
     if (this.localT <= 0) {
@@ -395,7 +460,7 @@ export class Traffic {
         if (Math.abs(v.x - vw.x) < far && Math.abs(v.y - vw.y) < far && Math.hypot(v.x - vw.x, v.y - vw.y) < far) near++;
       }
       const want = TRAFFIC_CFG.nearTarget * this.busyAt(vw.x, vw.y);
-      if (near < want && locals < TRAFFIC_CFG.maxLocals && this.vs.length < TRAFFIC_CFG.maxVehicles + 40) {
+      if (near < want && locals < TRAFFIC_CFG.maxLocals && this.spawnRoom(true)) {
         this.spawnLocal();
         if (near < want * 0.6) this.spawnLocal();
       }
@@ -563,7 +628,7 @@ export class Traffic {
     }
     if (v.isPlayer) { const bm = this.ctl.brakeMin(v); if (bm !== null) a = Math.min(a, bm); }
     if (vd === 0 && v.v < 25) a = Math.min(a, -60);
-    v.acc = clamp(a, v.isPlayer ? -380 : -700, v.aMax);
+    v.acc = clamp(a, v.isPlayer ? -v.maxBrake : -700, v.aMax);
     v.braking = v.acc < -35 || (v.v < 4 && vd < 5);
   }
 
