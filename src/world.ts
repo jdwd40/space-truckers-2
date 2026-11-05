@@ -85,7 +85,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private navigationT = 0;
   costs: Record<string, number> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
-  inc!: Incidents; incG!: Phaser.GameObjects.Graphics; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
+  inc!: Incidents; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
   outposts!: Outposts; decoG!: Phaser.GameObjects.Graphics;
   landmarks!: Landmarks; landG!: Phaser.GameObjects.Graphics; favours!: Favours;
@@ -149,7 +149,6 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       for (const seg of st.arr) this.traffic.addGate(seg, edgeS(seg, st, STATION_R, true) - 20);
       for (const seg of st.dep) this.traffic.addGate(seg, edgeS(seg, st, STATION_R, false) + 170);
     }
-    this.incG = this.add.graphics().setDepth(DEPTH.veh(0) + 0.25); this.layer.add(this.incG);
     this.favours = new Favours(this.net, this.traffic, this);
     bus.on('act', () => this.favours.act());
     this.inc = new Incidents(this.net, this.traffic, {
@@ -935,7 +934,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.setPieces.update(dt, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur, this.zone.id, G.mode === 'drive');
     this.updateVisuals(dt);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
-    this.inc.draw(this.incG, this.glowTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.inc.draw(this.incG, this.glow, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.decoG.clear(); this.landG.clear();
     this.outposts.update(this.decoG, this.fxTop, this.glowTop, this.net, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.landmarks.update(this.landG, this.fxTop, this.glowTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
@@ -1214,13 +1213,15 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
   }
 
-  /** per-deck effect layers, one set for every deck the network actually has: a road above the last layer would cover its own ships' lights */
+  /** per-deck effect and incident layers, one set for every deck the network actually has: a road above its layers would cover its own ships' lights and closures */
   private buildDeckLayers() {
     const decks = 1 + Math.max(...this.net.segs.map((seg) => seg.level));
     for (let l = 0; l < decks; l++) {
       const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD);
       this.fx.push(g); this.layer.add(g);
       this.glow.push(new GlowLayer(this, this.layer, DEPTH.veh(l) + 0.4));
+      const ig = this.add.graphics().setDepth(DEPTH.veh(l) + 0.25);
+      this.incG.push(ig); this.layer.add(ig);
     }
   }
 

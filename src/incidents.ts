@@ -366,10 +366,13 @@ export class Incidents {
     return best < 0 ? l0 : best;
   }
 
-  /** g is the plain incident layer; the lamps, halos, sparks and smoke are pooled glow images */
-  draw(g: Phaser.GameObjects.Graphics, fx: GlowLayer, time: number, cx: number, cy: number, r: number) {
-    g.clear();
-    const rect = (x: number, y: number, h: number, len: number, wid: number, col: number, a = 1) => {
+  /**
+   * decks holds the plain incident layer of each road deck and glows its pooled images for the lamps, halos, sparks and
+   * smoke; a scene is drawn on the deck of its own road, so it shows on a flyover and stays hidden under one
+   */
+  draw(decks: Phaser.GameObjects.Graphics[], glows: GlowLayer[], time: number, cx: number, cy: number, r: number) {
+    for (const g of decks) g.clear();
+    const rect = (g: Phaser.GameObjects.Graphics, x: number, y: number, h: number, len: number, wid: number, col: number, a = 1) => {
       const c = Math.cos(h), s = Math.sin(h), nx = -s, ny = c;
       g.fillStyle(col, a);
       g.fillPoints([
@@ -380,11 +383,11 @@ export class Incidents {
       ], true);
     };
     for (const inc of this.list) {
+      const seg = inc.seg, g = decks[seg.level], fx = glows[seg.level];
       if (inc.phase === 'stopping') {
         for (const v of inc.cas) if (v.smoke) this.smoke(fx, v, time);
         continue;
       }
-      const seg = inc.seg;
       const mid = seg.path.at((inc.rear + inc.front) / 2);
       if (Math.hypot(mid.x - cx, mid.y - cy) > r + 700) continue;
       const open = this.openLane(inc);
@@ -402,8 +405,8 @@ export class Incidents {
       }
       // flashing arrow board at the start of the closure
       const bp = seg.path.at(inc.blocks[0].s0 - 14, seg.laneLat(l0));
-      rect(bp.x + 2, bp.y + 3, bp.h, 16, 46, 0x000000, 0.3);
-      rect(bp.x, bp.y, bp.h, 16, 46, 0x22262f, 1);
+      rect(g, bp.x + 2, bp.y + 3, bp.h, 16, 46, 0x000000, 0.3);
+      rect(g, bp.x, bp.y, bp.h, 16, 46, 0x22262f, 1);
       const act = Math.floor(time * 4) % 4;
       for (let i = 0; i < 3; i++) {
         const q = seg.path.at(inc.blocks[0].s0 - 14, seg.laneLat(l0) + dir * (i - 1) * 13);

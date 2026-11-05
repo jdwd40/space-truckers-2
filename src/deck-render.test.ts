@@ -11,6 +11,7 @@ import { WorldScene } from './world';
 import { DEPTH } from './render';
 import { Network, type Seg } from './network';
 import { Traffic, type PlayerCtl } from './traffic';
+import { Incidents } from './incidents';
 
 const ctl: PlayerCtl = {
   desired: () => 0, extraGap: () => Infinity, obeySignal: () => true,
@@ -47,6 +48,10 @@ describe('vehicle effects on every deck', () => {
       expect(g.depth).toBeGreaterThan(DEPTH.road(seg.level));
       expect(g.depth).toBeGreaterThan(DEPTH.veh(seg.level));
       expect(g.depth).toBeLessThan(DEPTH.fxTop);
+      const ig = scene.incG[seg.level];
+      expect(ig, `incident layer for ${seg.name}`).toBeDefined();
+      expect(ig.depth).toBeGreaterThan(DEPTH.road(seg.level));
+      expect(ig.depth).toBeLessThan(DEPTH.road(seg.level + 1));
     }
   });
 
@@ -67,6 +72,29 @@ describe('vehicle effects on every deck', () => {
       (scene as any).updateVisuals(0.016);
       const painted = scene.glow.flatMap((gl, l) => ((gl as any).calls > 0 ? [l] : []));
       expect(painted, seg.name).toEqual([seg.level]);
+    }
+  });
+});
+
+describe('incident scenes on every deck', () => {
+  it('draws the closure, crew and lamps on the deck of the incident\'s own road', () => {
+    const net = new Network();
+    const m1 = net.roads.find((r) => r.name === 'M1')!.f[0];
+    for (const seg of [m1, ...bypasses(net)]) {
+      expect(seg.kind).toBe('motorway');
+      const tr = new Traffic(net, ctl);
+      const v = tr.add('van', seg, seg.len / 2, 0, 0);
+      const inc = new Incidents(net, tr, { playerCrashed() {}, playerReleased() {}, bump() {} });
+      const incident = (inc as any).create('accident', seg, [v], false);
+      v.smoke = true;
+      (inc as any).settle(incident);
+      expect(incident.phase).toBe('wait');
+      incident.policeHere = true; incident.towHere = true; incident.phase = 'repair';
+      const decks = [0, 1, 2, 3, 4].map(() => recorder()), glows = decks.map(() => recorder());
+      inc.draw(decks, glows, 1, v.x, v.y, 1000);
+      // Graphics.clear() is called on every deck, so a scene costs a deck more than that one call
+      expect(decks.flatMap((g, l) => (g.calls > 1 ? [l] : [])), seg.name).toEqual([seg.level]);
+      expect(glows.flatMap((g, l) => (g.calls > 0 ? [l] : [])), seg.name).toEqual([seg.level]);
     }
   });
 });
