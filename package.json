@@ -5,18 +5,21 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "three": "0.185.1",
-    "phaser": "3.90.0",
-    "@dimforge/rapier3d-compat": "0.20.0",
     "@dimforge/rapier2d-compat": "0.20.0",
+    "@dimforge/rapier3d-compat": "0.20.0",
+    "phaser": "3.90.0",
+    "three": "0.185.1",
     "three.quarks": "0.17.1"
   },
   "devDependencies": {
     "@types/three": "0.185.4",
     "typescript": "^5.9.2",
-    "vite": "^7.1.5"
+    "vite": "^7.1.5",
+    "vitest": "^5.1.0"
   }
 }

@@ -9,7 +9,7 @@ export interface Cullable { obj: { setVisible(v: boolean): unknown }; x0: number
 export const BAKE = { station: 1, road: 1.5, decor: 1.5, sign: 2 };
 
 const ASPH = 0x3a4153, RIM = 0xa9b3c8, SHOULDER = 0x30364a, NEON = 0x5ad8ff;
-export const DEPTH = { road: (l: number) => 5 + l * 3, veh: (l: number) => 6 + l * 3, sign: 7.6, station: 17, fxTop: 18 };
+export const DEPTH = { road: (l: number) => 5 + l * 3, veh: (l: number) => 6 + l * 3, sign: 7.6, station: 17, fxTop: 19 };
 
 // ---------------------------------------------------------------- textures
 const MITE_COLORS = [0xe8473f, 0x2ec4b6, 0xffc93c, 0x9b5de5, 0xf15bb5, 0x4ea8ff];
