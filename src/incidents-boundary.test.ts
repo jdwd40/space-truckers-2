@@ -215,6 +215,35 @@ describe('a crash inside the taper of a lane that ends', () => {
   });
 });
 
+describe('a crash beside the last lane of a road narrowing to one', () => {
+  const BYPASSES = ['Meridian Bypass', 'Zenith Bypass'].flatMap(name => (['f', 'r'] as const).map(side => [name, side] as const));
+  const crash = (w: Scene, back: number) => {
+    w.player(w.seg, w.seg.len - back - 15, 0, 345);
+    w.standing(w.seg, w.seg.len - back, 0);
+    w.run(1);
+    const incident = w.inc.playerIncident()!;
+    expect(incident.lanes).toEqual([0]);
+    return incident;
+  };
+
+  describe.each(BYPASSES)('%s %s', (name, side) => {
+    // the lane alongside ends at the join, somewhere past the crews' marks; from 700 back the crash is in its taper
+    it.each([1500, 810, 700, 400, 200])('sends both crews past a wreck %i from the end, to park in its lane', back => {
+      const w = scene(name, side, 0), { seg, next, run } = w;
+      expect([seg.lanes, next.lanes]).toEqual([2, 1]);
+      const incident = crash(w, back);
+      run(80, () => incident.phase === 'repair');
+      expect(incident.phase).toBe('repair');
+      expect(incident.policeHere && incident.towHere).toBe(true);
+      run(2);
+      for (const [crew, ahead] of [[incident.police!, POLICE_AHEAD], [incident.tow!, TOW_AHEAD]] as const) {
+        expectCrewParked(w, incident, crew, ahead);
+        expect(crew.lane).toBe(0);
+      }
+    });
+  });
+});
+
 describe('a cordon that reaches a join without a casualty on the far side', () => {
   it('extends upstream onto the previous section for a rig whose tail is still on it', () => {
     const w = scene('M1', 'f', 0), { seg, next, inc, run } = w;

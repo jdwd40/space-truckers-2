@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, LW, TAPER } from './network';
+import { Network, Seg, LW } from './network';
 import { Traffic, Veh } from './traffic';
 import { clamp, pick, rand } from './geom';
 import type { GlowLayer } from './glow';
@@ -135,8 +135,8 @@ export class Incidents {
       s = Math.max(head + 120, s - 450);
     }
     if (s > stopAt - 160) s = Math.max(head + 60, stopAt - 160);
-    // only a lane that carries on all the way gets there: one dropped en route, or at a taper reaching the stop, holds the crew up
-    const lane = this.openLane(inc, Math.min(...net.span(seg, s - 8 * 70, stopAt + TAPER).map((x) => x.seg.lanes)));
+    // the lane only has to last until the crew is past the casualties: step() then moves it across to park, so one that ends beyond them will do
+    const lane = this.openLane(inc, Math.min(...net.span(seg, s - 8 * 70, inc.front).map((x) => x.seg.lanes)));
     for (let i = 0; i < 8; i++) {
       const at = onRoad(s);
       if (this.tr.laneFree(at.seg, at.s, lane, 32)) break;
