@@ -1154,7 +1154,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.cameraOverview = advanceCameraOverview(this.cameraOverview, overviewActive, dt);
     if (overviewActive && incident) {
       // Casualties can coast into the next section before stopping. Each s is local to its own segment,
-      // so build the envelope in world space without borrowing incident.front/rear (also section-local).
+      // so build the envelope in world space without borrowing incident.front/rear (measured from incident.seg).
       const casualties = [p, ...incident.cas.filter((v) => !v.dead && v !== p)];
       this.incidentCameraPoints = [];
       for (const v of casualties) {
@@ -1403,7 +1403,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker.clear();
     for (const inc of this.inc.list) {
       if (inc.phase === 'stopping') continue;
-      const q = inc.seg.path.at(inc.front);
+      const at = this.net.place(inc.seg, inc.front), q = at.seg.path.at(at.s);
       const pulse = 0.55 + 0.45 * Math.sin(this.clk * 6);
       this.mapMarker.fillStyle(0xff4b3e, 0.9); this.mapMarker.fillCircle(q.x, q.y, 190);
       this.mapMarker.lineStyle(60, 0xffffff, pulse); this.mapMarker.strokeCircle(q.x, q.y, 260);

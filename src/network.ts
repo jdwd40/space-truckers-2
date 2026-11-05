@@ -90,6 +90,22 @@ export class Seg {
     const i = Math.max(0, Math.min(this.limits.length - 1, Math.floor(s / 100)));
     return this.limits[i] || this.limit;
   }
+  /**
+   * The closures ahead of s within range: this section's, then those of the sections after it, moved into this section's
+   * coordinates (lane i continues as lane i over a join). A closure starting at s = 0 only carries on one from the section
+   * before, so it is left out: it is no new obstacle, and traffic already inside the cordon must not stop at the join.
+   */
+  blocksAhead(s: number, range: number): Seg['blocks'] {
+    let out = this.blocks, off = this.len;
+    for (let seg = this.next; seg && off < s + range; off += seg.len, seg = seg.next) {
+      for (const b of seg.blocks) {
+        if (b.s0 <= 0) continue;
+        if (out === this.blocks) out = [...out];
+        out.push({ ...b, s0: b.s0 + off, s1: b.s1 + off });
+      }
+    }
+    return out;
+  }
 }
 
 const dirv = (h: number) => ({ x: Math.cos(h), y: Math.sin(h) });
@@ -171,10 +187,32 @@ export class Network {
     return { seg: best, s: bs };
   }
   /** a point at s on seg, walking into the neighbouring section when s falls off either end */
-  private place(seg: Seg, s: number): { seg: Seg; s: number } {
+  place(seg: Seg, s: number): { seg: Seg; s: number } {
     while (s < 0 && seg.prev) { seg = seg.prev; s += seg.len; }
     while (s > seg.len && seg.next) { s -= seg.len; seg = seg.next; }
     return { seg, s };
+  }
+  /** where section `to` starts, measured from the start of `from` along their carriageway; null if it is on another one */
+  offset(from: Seg, to: Seg): number | null {
+    let d = 0;
+    for (let seg: Seg | null = from; seg; seg = seg.next) { if (seg === to) return d; d += seg.len; }
+    d = 0;
+    for (let seg = from.prev; seg; seg = seg.prev) { d -= seg.len; if (seg === to) return d; }
+    return null;
+  }
+  /** where the carriageway of seg begins, measured from the start of seg */
+  chainStart(seg: Seg): number {
+    let d = 0;
+    for (let up = seg.prev; up; up = up.prev) d -= up.len;
+    return d;
+  }
+  /** the sections of seg's carriageway touched by [a, b], measured from the start of seg: upstream first, each with where it starts */
+  span(seg: Seg, a: number, b: number): { seg: Seg; off: number }[] {
+    let off = 0;
+    while (a < off && seg.prev) { seg = seg.prev; off -= seg.len; }
+    const out: { seg: Seg; off: number }[] = [];
+    for (let at: Seg | null = seg; at && off < b; off += at.len, at = at.next) if (off + at.len > a) out.push({ seg: at, off });
+    return out;
   }
   auxPt(seg: Seg, s: number, side: number): Pose {
     return seg.path.at(s, seg.laneLat(side > 0 ? seg.lanes : -1));
