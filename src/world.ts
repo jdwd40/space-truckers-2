@@ -135,7 +135,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       for (const seg of st.arr) this.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
     }
     this.decoG = this.add.graphics().setDepth(DEPTH.station + 0.3); this.layer.add(this.decoG);
-    for (let l = 0; l < 4; l++) { const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD); this.fx.push(g); this.layer.add(g); this.glow.push(new GlowLayer(this, this.layer, DEPTH.veh(l) + 0.4)); }
+    this.buildDeckLayers();
     this.fxTop = this.add.graphics().setDepth(DEPTH.fxTop).setBlendMode(Phaser.BlendModes.ADD); this.layer.add(this.fxTop);
     this.glowTop = new GlowLayer(this, this.layer, DEPTH.fxTop);
     this.guide = this.add.graphics(); this.layer.add(this.guide);
@@ -1214,6 +1214,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
   }
 
+  /** per-deck effect layers, one set for every deck the network actually has: a road above the last layer would cover its own ships' lights */
+  private buildDeckLayers() {
+    const decks = 1 + Math.max(...this.net.segs.map((seg) => seg.level));
+    for (let l = 0; l < decks; l++) {
+      const g = this.add.graphics().setDepth(DEPTH.veh(l) + 0.4).setBlendMode(Phaser.BlendModes.ADD);
+      this.fx.push(g); this.layer.add(g);
+      this.glow.push(new GlowLayer(this, this.layer, DEPTH.veh(l) + 0.4));
+    }
+  }
+
   /** put a ship's cab and trailer images where the ship is, at the depth of the deck it is on */
   private placeVis(v: Veh, vis: Vis) {
     // each unit is drawn at the depth of the deck it is actually on: a unit further back than the nose has come along
@@ -1273,7 +1283,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const { units, lvl } = this.placeVis(v, vis);
       if (v.alpha < 0.05) continue;
       // lights: lamps and halos are pooled images (gl), only the exhaust streak and the player ring stay as lines (g)
-      const g = this.fx[Math.min(3, lvl)], gl = this.glow[Math.min(3, lvl)];
+      const g = this.fx[lvl], gl = this.glow[lvl];
       const last = units[units.length - 1];
       const ca = Math.cos(last.a), sa = Math.sin(last.a);
       const rx = last.x - ca * last.L / 2, ry = last.y - sa * last.L / 2;
