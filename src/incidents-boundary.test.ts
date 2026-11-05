@@ -241,6 +241,21 @@ describe('a crash beside the last lane of a road narrowing to one', () => {
         expect(crew.lane).toBe(0);
       }
     });
+
+    // the only way past is the lane that ends, so a queue at its taper would shut the crews out
+    it.each([810, 400])('keeps that lane moving for them past a wreck %i from the end', back => {
+      const w = scene(name, side, 0), { seg, tr, run } = w;
+      const incident = crash(w, back);
+      const ships = [1500, 1700, 1900].map(behind => {
+        const ship = tr.add('van', seg, seg.len - back - behind, 1, 250);
+        ship.age = 8;
+        return ship;
+      });
+      run(80, () => incident.phase === 'repair');
+      expect(incident.policeHere && incident.towHere).toBe(true);
+      expectCrewParked(w, incident, incident.police!, POLICE_AHEAD);
+      for (const ship of ships) expect(ship.seg).not.toBe(seg);
+    });
   });
 });
 

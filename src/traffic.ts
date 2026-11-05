@@ -564,7 +564,7 @@ export class Traffic {
     }
     // a lane that is dropped at the end of this section: AI traffic queues at the taper until it can merge
     if (!v.isPlayer && !v.emergency && seg.drop && v.lane >= seg.lanes - seg.drop && v.lane < seg.lanes) {
-      const d = seg.len - TAPER - v.s;
+      const d = this.mergeHold(seg, v.lane) - v.s;
       if (d < gap) { gap = Math.max(0.5, d); lv = 0; }
     }
     // services
@@ -776,6 +776,13 @@ export class Traffic {
   laneClosed(seg: Seg, lane: number, s: number, horizon = 1500): boolean {
     for (const b of seg.blocksAhead(s, horizon)) if (b.lane === lane && b.s1 > s - 60 && b.s0 - s < horizon) return true;
     return false;
+  }
+  /** where AI traffic in a dropped lane waits to merge: the taper, unless the lane alongside is coned off there, when nothing could ever merge and the queue would shut out the crews, so it waits beyond the cones */
+  private mergeHold(seg: Seg, lane: number): number {
+    const taper = seg.len - TAPER;
+    let hold = taper;
+    for (const b of seg.blocksAhead(taper, 1500)) if (b.lane === lane - 1 && b.s1 > taper - 60 && b.s0 - taper < 1500) hold = Math.max(hold, b.s1 + 100);
+    return hold;
   }
   /** stopped at the cones of a closed lane: allowed to step sideways through a neighbouring closed lane to reach an open one */
   private trapped(v: Veh): boolean {
