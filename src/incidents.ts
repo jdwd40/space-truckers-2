@@ -1,11 +1,12 @@
 import Phaser from 'phaser';
-import { Network, Seg, LW } from './network';
+import { Network, Seg, LW, TAPER } from './network';
 import { Traffic, Veh } from './traffic';
 import { clamp, pick, rand } from './geom';
 import type { GlowLayer } from './glow';
 import { SPEEDS, bumperCrashAt, bumperFee, bumperRepair } from './state';
 
-export interface Block { lane: number; s0: number; s1: number; inc: Incident }
+/** one lane of a cordon on one section, in that section's coordinates: a cordon over a join has a block on each side of it */
+export interface Block { lane: number; s0: number; s1: number; inc: Incident; seg: Seg }
 /** how far ahead of the wreck's nose the last crew vehicle (the repair truck) parks */
 const CREW_AHEAD = 24 + 28 + 24 + 34;
 
@@ -13,7 +14,9 @@ export interface Incident {
   id: number; kind: 'breakdown' | 'accident'; seg: Seg;
   cas: Veh[]; lanes: number[]; shoulder: boolean;
   phase: 'stopping' | 'wait' | 'repair' | 'clear';
-  t: number; stopT: number; front: number; rear: number;
+  t: number; stopT: number;
+  /** extent of the casualties, measured along the carriageway from the start of `seg`: either can lie past an end of `seg`, so resolve them with Network.place */
+  front: number; rear: number;
   policeAt: number; towAt: number; police: Veh | null; tow: Veh | null; policeHere: boolean; towHere: boolean;
   repairT: number; repairDur: number; clearT: number; withPlayer: boolean; blocks: Block[]; done: boolean; waited: number;
   /** another incident the crews deal with first; no police or rescue truck is dispatched for this one until it is released */
@@ -69,8 +72,11 @@ export class Incidents {
       }
       if (!inc.police && inc.t >= inc.policeAt) this.dispatch(inc, 'police');
       if (!inc.tow && inc.t >= inc.towAt) this.dispatch(inc, 'tow');
-      const l0 = inc.lanes[0];
-      for (const r of [inc.police, inc.tow]) if (r && !r.dead && r.lane !== l0 && r.pend === null && r.s - r.totLen > inc.front + 6) this.tr.ask(r, l0, true);
+      for (const r of [inc.police, inc.tow]) {
+        if (!r || r.dead || r.pend !== null) continue;
+        const lane = Math.min(inc.lanes[0], r.seg.lanes - 1), off = this.net.offset(inc.seg, r.seg);
+        if (r.lane !== lane && off !== null && off + r.s - r.totLen > inc.front + 6) this.tr.ask(r, lane, true);
+      }
       const here = (r: Veh | null) => !!r && !r.dead && r.v < 3 && r.stopAt !== null && r.stopAt - r.s < 40;
       if (here(inc.police)) inc.policeHere = true;
       if (here(inc.tow)) inc.towHere = true;
@@ -88,42 +94,59 @@ export class Incidents {
   }
 
   private settle(inc: Incident) {
-    const seg = inc.seg, n = seg.lanes;
+    const seg = inc.seg;
     let front = -Infinity, rear = Infinity;
     const lanes = new Set<number>();
     for (const v of inc.cas) {
-      if (v.dead) continue;
-      front = Math.max(front, v.s); rear = Math.min(rear, v.s - v.totLen);
-      lanes.add(clamp(v.lane, 0, n - 1));
+      // a casualty may have coasted over a join: its s counts from the start of its own section
+      const off = this.net.offset(seg, v.seg);
+      if (v.dead || off === null) continue;
+      front = Math.max(front, off + v.s); rear = Math.min(rear, off + v.s - v.totLen);
+      lanes.add(clamp(v.lane, 0, v.seg.lanes - 1));
     }
     if (front === -Infinity) { inc.done = true; return; }
     inc.front = front; inc.rear = rear;
     inc.lanes = [...lanes].sort((a, b) => a - b);
     // the closure runs on past the wreck: police and the repair truck park in front of it, where the player can see them
-    const s0 = Math.max(40, rear - 430), s1 = front + CREW_AHEAD + 60;
-    for (const l of inc.lanes) { const b: Block = { lane: l, s0, s1, inc }; seg.blocks.push(b); inc.blocks.push(b); }
+    const s0 = Math.max(this.net.chainStart(seg) + 40, rear - 430), s1 = front + CREW_AHEAD + 60;
+    for (const { seg: at, off } of this.net.span(seg, s0, s1)) {
+      for (const l of inc.lanes) {
+        if (l >= at.lanes) continue;
+        const b: Block = { lane: l, s0: Math.max(0, s0 - off), s1: Math.min(at.len, s1 - off), inc, seg: at };
+        at.blocks.push(b); inc.blocks.push(b);
+      }
+    }
     inc.phase = 'wait'; inc.t = 0;
     inc.policeAt = inc.withPlayer ? rand(8, 11) : rand(9, 14);
     inc.towAt = inc.policeAt + (inc.withPlayer ? rand(9, 13) : rand(10, 16));
   }
 
   private dispatch(inc: Incident, type: 'police' | 'tow') {
-    const seg = inc.seg;
-    const lane = this.openLane(inc);
+    const seg = inc.seg, net = this.net;
     // park nose-to-tail in front of the casualties: police first, repair truck beyond it
     const stopAt = inc.front + (type === 'police' ? 24 + 28 : CREW_AHEAD);
-    const vw = this.tr.view;
-    let s = Math.max(120, inc.rear - 3300);
+    const vw = this.tr.view, head = net.chainStart(seg);
+    // the crew starts out of sight behind the scene, which can be on an earlier section; all of this is measured as front/rear are
+    const onRoad = (at: number) => net.place(seg, at);
+    let s = Math.max(head + 120, inc.rear - 3300);
     for (let i = 0; i < 7; i++) {
-      const p = seg.path.at(s);
-      if (s <= 130 || Math.hypot(p.x - vw.x, p.y - vw.y) > vw.r + 120) break;
-      s = Math.max(120, s - 450);
+      const at = onRoad(s), p = at.seg.path.at(at.s);
+      if (s <= head + 130 || Math.hypot(p.x - vw.x, p.y - vw.y) > vw.r + 120) break;
+      s = Math.max(head + 120, s - 450);
     }
-    if (s > stopAt - 160) s = Math.max(60, stopAt - 160);
-    for (let i = 0; i < 8 && !this.tr.laneFree(seg, s, lane, 32); i++) s = Math.max(40, s - 70);
-    const v = this.tr.add(type, seg, s, lane, 300);
+    if (s > stopAt - 160) s = Math.max(head + 60, stopAt - 160);
+    // only a lane that carries on all the way gets there: one dropped en route, or at a taper reaching the stop, holds the crew up
+    const lane = this.openLane(inc, Math.min(...net.span(seg, s - 8 * 70, stopAt + TAPER).map((x) => x.seg.lanes)));
+    for (let i = 0; i < 8; i++) {
+      const at = onRoad(s);
+      if (this.tr.laneFree(at.seg, at.s, lane, 32)) break;
+      s = Math.max(head + 40, s - 70);
+    }
+    const start = onRoad(s);
+    const v = this.tr.add(type, start.seg, start.s, lane, 300);
     v.incidentResponder = true;
-    v.emergency = true; v.ignoreBlock = true; v.siren = true; v.vDes = 400; v.local = false; v.stopAt = stopAt; v.resp = inc;
+    v.emergency = true; v.ignoreBlock = true; v.siren = true; v.vDes = 400; v.local = false; v.resp = inc;
+    v.stopAt = stopAt - net.offset(seg, start.seg)!;
     if (type === 'police') inc.police = v; else inc.tow = v;
   }
 
@@ -144,7 +167,7 @@ export class Incidents {
   }
 
   private finish(inc: Incident) {
-    for (const b of inc.blocks) { const i = inc.seg.blocks.indexOf(b); if (i >= 0) inc.seg.blocks.splice(i, 1); }
+    for (const b of inc.blocks) { const i = b.seg.blocks.indexOf(b); if (i >= 0) b.seg.blocks.splice(i, 1); }
     for (const r of [inc.police, inc.tow]) if (r) r.ignoreBlock = false;
     inc.done = true;
   }
@@ -330,7 +353,7 @@ export class Incidents {
   // ------------------------------------------------------------ queries for the player's guidance
   hazardAhead(seg: Seg, s: number): { d: number; lanes: number[]; inc: Incident } | null {
     let best: { d: number; lanes: number[]; inc: Incident } | null = null;
-    for (const b of seg.blocks) {
+    for (const b of seg.blocksAhead(s, 2400)) {
       if (b.s1 < s - 20) continue;
       const d = Math.max(0, b.s0 - s);
       if (d > 2400) continue;
@@ -339,11 +362,11 @@ export class Incidents {
     return best;
   }
   laneBlockedAhead(seg: Seg, lane: number, s: number, range: number): { d: number; inc: Incident } | null {
-    for (const b of seg.blocks) if (b.lane === lane && b.s1 > s - 20 && b.s0 - s < range) return { d: Math.max(0, b.s0 - s), inc: b.inc as Incident };
+    for (const b of seg.blocksAhead(s, range)) if (b.lane === lane && b.s1 > s - 20 && b.s0 - s < range) return { d: Math.max(0, b.s0 - s), inc: b.inc as Incident };
     return null;
   }
   inSlowZone(seg: Seg, s: number): boolean {
-    for (const b of seg.blocks) if (s > b.s0 - 160 && s < b.s1 + 80) return true;
+    for (const b of seg.blocksAhead(s, 160)) if (s > b.s0 - 160 && s < b.s1 + 80) return true;
     return false;
   }
   status(inc: Incident): string {
@@ -359,8 +382,9 @@ export class Incidents {
   }
 
   // ------------------------------------------------------------ drawing the scene
-  private openLane(inc: Incident): number {
-    const n = inc.seg.lanes, l0 = inc.lanes[0];
+  /** the lane below n nearest the closed ones that is itself open */
+  private openLane(inc: Incident, n = inc.seg.lanes): number {
+    const l0 = inc.lanes[0];
     let best = -1, bd = 99;
     for (let l = 0; l < n; l++) if (!inc.lanes.includes(l) && Math.abs(l - l0) < bd) { bd = Math.abs(l - l0); best = l; }
     return best < 0 ? l0 : best;
@@ -382,21 +406,27 @@ export class Incidents {
         new Phaser.Geom.Point(x - c * len / 2 + nx * wid / 2, y - s * len / 2 + ny * wid / 2),
       ], true);
     };
+    // a scene can run over a join, where the section (and so the offset of a lane) changes
+    const onRoad = (seg: Seg, s: number, lane: number, lat = 0) => {
+      const q = this.net.place(seg, s);
+      return q.seg.path.at(q.s, q.seg.laneLat(Math.min(lane, q.seg.lanes - 1)) + lat);
+    };
     for (const inc of this.list) {
       const seg = inc.seg, g = decks[seg.level], fx = glows[seg.level];
       if (inc.phase === 'stopping') {
         for (const v of inc.cas) if (v.smoke) this.smoke(fx, v, time);
         continue;
       }
-      const mid = seg.path.at((inc.rear + inc.front) / 2);
+      const mid = onRoad(seg, (inc.rear + inc.front) / 2, inc.lanes[0]);
       if (Math.hypot(mid.x - cx, mid.y - cy) > r + 700) continue;
       const open = this.openLane(inc);
       const l0 = inc.lanes[0];
       const dir = Math.sign(seg.laneLat(open) - seg.laneLat(l0)) || 1;
       // cones along the closed lane(s)
       for (const b of inc.blocks) {
-        for (let s = b.s0 + 24; s < inc.rear - 70; s += 50) {
-          const q = seg.path.at(s, seg.laneLat(b.lane));
+        const end = Math.min(b.s1, inc.rear - this.net.offset(seg, b.seg)! - 70);
+        for (let s = b.s0 + 24; s < end; s += 50) {
+          const q = b.seg.path.at(s, b.seg.laneLat(b.lane));
           g.fillStyle(0x000000, 0.3); g.fillCircle(q.x + 2, q.y + 3, 6);
           g.fillStyle(0xff7a1a, 1); g.fillCircle(q.x, q.y, 6);
           g.fillStyle(0xffffff, 1); g.fillCircle(q.x, q.y, 3.6);
@@ -404,20 +434,20 @@ export class Incidents {
         }
       }
       // flashing arrow board at the start of the closure
-      const bp = seg.path.at(inc.blocks[0].s0 - 14, seg.laneLat(l0));
+      const first = inc.blocks[0];
+      const bp = onRoad(first.seg, first.s0 - 14, l0);
       rect(g, bp.x + 2, bp.y + 3, bp.h, 16, 46, 0x000000, 0.3);
       rect(g, bp.x, bp.y, bp.h, 16, 46, 0x22262f, 1);
       const act = Math.floor(time * 4) % 4;
       for (let i = 0; i < 3; i++) {
-        const q = seg.path.at(inc.blocks[0].s0 - 14, seg.laneLat(l0) + dir * (i - 1) * 13);
+        const q = onRoad(first.seg, first.s0 - 14, l0, dir * (i - 1) * 13);
         const on = i === act || (i === 0 && act === 3);
         g.fillStyle(on ? 0xffc02a : 0x5a4a1a, 1); g.fillCircle(q.x, q.y, 4.6);
         if (on) fx.soft(q.x, q.y, 14, 0xffb020, 0.5);
       }
       // officer waving traffic past
       if (inc.policeHere && inc.phase !== 'clear') {
-        const so = inc.front + 12;
-        const o = seg.path.at(so, seg.laneLat(l0) + dir * 9);
+        const o = onRoad(seg, inc.front + 12, l0, dir * 9);
         const lat = { x: -Math.sin(o.h) * dir, y: Math.cos(o.h) * dir };
         const al = { x: Math.cos(o.h), y: Math.sin(o.h) };
         const sw = Math.sin(time * 5);
@@ -434,7 +464,7 @@ export class Incidents {
       if (inc.phase === 'repair' && inc.towHere) {
         const v = inc.cas.find((c) => !c.dead);
         if (v) {
-          const q = seg.path.at(v.s + 4, seg.laneLat(l0) - dir * 14);
+          const q = onRoad(v.seg, v.s + 4, l0, -dir * 14);
           g.fillStyle(0xffb020, 1); g.fillCircle(q.x, q.y, 4.5); g.fillStyle(0xf2c9a0, 1); g.fillCircle(q.x, q.y, 2.3);
           for (let k = 0; k < 4; k++) fx.dot(q.x + rand(-9, 9), q.y + rand(-9, 9), rand(0.8, 2.2), 0xbff4ff, 0.8);
           fx.soft(q.x, q.y, 9, 0x7fdcff, 0.35 + 0.2 * Math.sin(time * 30));

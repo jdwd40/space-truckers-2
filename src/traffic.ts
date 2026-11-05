@@ -263,7 +263,7 @@ export class Traffic {
       if (candidate < 0 || candidate >= n) {
         if ((candidate !== -1 && candidate !== n) || !seg.auxAt(s, candidate < 0 ? -1 : 1)) return false;
       } else if (this.dropping(seg, candidate, s) || this.deadLane(seg, candidate, s) || this.deadLane(seg, candidate, s - len)) return false;
-      if (seg.blocks.some(b => b.lane === candidate && b.s1 > s - len - 120 && b.s0 < s + 160)) return false;
+      if (seg.blocksAhead(s, 160).some(b => b.lane === candidate && b.s1 > s - len - 120 && b.s0 < s + 160)) return false;
       return this.laneFree(seg, s, candidate, len, tight ? 12 : 120, tight ? 12 : 160);
     };
     if (!available(lane)) {
@@ -545,8 +545,8 @@ export class Traffic {
       if (d > -0.5 && d < L && d < gap && this.stopApplies(v, st)) { gap = Math.max(0.5, d); lv = 0; }
     }
     if (v.stopAt !== null) { const d = v.stopAt - v.s; if (d > -4 && d < gap) { gap = Math.max(0.5, d); lv = 0; } }
-    if (!v.ignoreBlock && seg.blocks.length) {
-      for (const b of seg.blocks) {
+    if (!v.ignoreBlock) {
+      for (const b of seg.blocksAhead(v.s, L)) {
         const d = b.s0 - v.s;
         if (d < -1 || d > L || d >= gap) continue;
         const lt = seg.laneLat(b.lane);
@@ -563,7 +563,7 @@ export class Traffic {
       }
     }
     // a lane that is dropped at the end of this section: AI traffic queues at the taper until it can merge
-    if (!v.isPlayer && seg.drop && v.lane >= seg.lanes - seg.drop && v.lane < seg.lanes) {
+    if (!v.isPlayer && !v.emergency && seg.drop && v.lane >= seg.lanes - seg.drop && v.lane < seg.lanes) {
       const d = seg.len - TAPER - v.s;
       if (d < gap) { gap = Math.max(0.5, d); lv = 0; }
     }
@@ -615,7 +615,7 @@ export class Traffic {
       if (v.state === 'stopped') vd = onShoulder ? (v.stopAt !== null && v.stopAt - v.s > 10 ? 150 : 0) : 140;
     }
     // police direct traffic past a scene: everyone slows down
-    if (!v.emergency && seg.blocks.length) for (const b of seg.blocks) if (v.s > b.s0 - 160 && v.s < b.s1 + 80) { vd = Math.min(vd, SPEEDS[2]); break; }
+    if (!v.emergency) for (const b of seg.blocksAhead(v.s, 160)) if (v.s > b.s0 - 160 && v.s < b.s1 + 80) { vd = Math.min(vd, SPEEDS[2]); break; }
     const { gap, lv } = this.leader(v);
     v.leadGap = gap; v.leadV = lv;
     const v0 = Math.max(1, vd);
@@ -694,6 +694,8 @@ export class Traffic {
   private apply(v: Veh, t: Trans, over: number) {
     const old = v.seg;
     v.prevSeg = old; v.prevS = v.s - over; v.enterS = t.toS;
+    // a stop point beyond the join stays the same distance ahead, now in the coordinates of the section being entered
+    if (v.stopAt !== null) v.stopAt += t.toS - t.fromS;
     if (t.type === 'exit') { v.seg = t.to; v.s = t.toS + over; v.lane = 0; v.lat = 0; }
     else if (t.type === 'merge') { v.seg = t.to; v.s = t.toS + over; v.lane = t.side > 0 ? t.to.lanes : -1; v.lat = t.to.laneLat(v.lane); }
     else {
@@ -772,7 +774,7 @@ export class Traffic {
   }
 
   laneClosed(seg: Seg, lane: number, s: number, horizon = 1500): boolean {
-    for (const b of seg.blocks) if (b.lane === lane && b.s1 > s - 60 && b.s0 - s < horizon) return true;
+    for (const b of seg.blocksAhead(s, horizon)) if (b.lane === lane && b.s1 > s - 60 && b.s0 - s < horizon) return true;
     return false;
   }
   /** stopped at the cones of a closed lane: allowed to step sideways through a neighbouring closed lane to reach an open one */
@@ -892,9 +894,9 @@ export class Traffic {
       return;
     }
     // a coned-off lane ahead: get out of it early
-    if (!v.ignoreBlock && seg.blocks.length) {
+    if (!v.ignoreBlock) {
       let hit = false;
-      for (const b of seg.blocks) if (b.lane === v.lane && v.s < b.s1 && b.s0 - v.s < 1400) hit = true;
+      for (const b of seg.blocksAhead(v.s, 1400)) if (b.lane === v.lane && v.s < b.s1 && b.s0 - v.s < 1400) hit = true;
       if (hit) {
         const trapped = this.trapped(v);
         const opts = [v.lane - 1, v.lane + 1].filter((l) => l >= 0 && l < n && (trapped || !this.laneClosed(seg, l, v.s)));

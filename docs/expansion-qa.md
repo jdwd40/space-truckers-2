@@ -31,5 +31,4 @@ Ran the Vite development build in Chromium with controlled development-only play
 - This is a scoped simulation and visual smoke test, not a complete delivery playthrough on every route, a long-session performance benchmark, or a physical mobile-device test.
 - Congestion balance and traffic density still merit normal gameplay review.
 - Roadworks creation remains separately tracked in #7; it is not implemented or closed here.
-- Existing incident cordon/responder coordinates can be incorrect when casualties stop on different road sections. The new camera does not mix those local coordinates; the underlying incident simulation is tracked separately in #16.
 - The pull request is not merged or deployed by this work.
