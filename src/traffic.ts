@@ -263,7 +263,7 @@ export class Traffic {
       if (candidate < 0 || candidate >= n) {
         if ((candidate !== -1 && candidate !== n) || !seg.auxAt(s, candidate < 0 ? -1 : 1)) return false;
       } else if (this.dropping(seg, candidate, s) || this.deadLane(seg, candidate, s) || this.deadLane(seg, candidate, s - len)) return false;
-      if (seg.blocksAhead(s, 160).some(b => b.lane === candidate && b.s1 > s - len - 120 && b.s0 < s + 160)) return false;
+      if (seg.blocksAhead(s, MERGE_ZONE).some(b => b.lane === candidate && b.s1 > s - len - 120 && b.s0 < s + Math.max(160, b.warn ?? 0))) return false;
       return this.laneFree(seg, s, candidate, len, tight ? 12 : 120, tight ? 12 : 160);
     };
     if (!available(lane)) {
@@ -614,8 +614,11 @@ export class Traffic {
       if (v.state === 'broken') vd = v.goShoulder && !onShoulder ? 110 : 0;
       if (v.state === 'stopped') vd = onShoulder ? (v.stopAt !== null && v.stopAt - v.s > 10 ? 150 : 0) : 140;
     }
-    // police direct traffic past a scene: everyone slows down
-    if (!v.emergency) for (const b of seg.blocksAhead(v.s, 160)) if (v.s > b.s0 - 160 && v.s < b.s1 + 80) { vd = Math.min(vd, SPEEDS[2]); break; }
+    // police direct traffic past a scene: everyone slows down, and a signed closure starts that on its approach
+    if (!v.emergency) for (const b of seg.blocksAhead(v.s, MERGE_ZONE)) {
+      if (v.s > b.s0 - 160 && v.s < b.s1 + 80) { vd = Math.min(vd, SPEEDS[2]); break; }
+      if (b.warn && v.s > b.s0 - b.warn && v.s < b.s0) vd = Math.min(vd, SPEEDS[3]);
+    }
     const { gap, lv } = this.leader(v);
     v.leadGap = gap; v.leadV = lv;
     const v0 = Math.max(1, vd);
@@ -774,8 +777,16 @@ export class Traffic {
   }
 
   laneClosed(seg: Seg, lane: number, s: number, horizon = 1500): boolean {
-    for (const b of seg.blocksAhead(s, horizon)) if (b.lane === lane && b.s1 > s - 60 && b.s0 - s < horizon) return true;
+    for (const b of seg.blocksAhead(s, Math.max(horizon, MERGE_ZONE))) if (b.lane === lane && b.s1 > s - 60 && b.s0 - s < Math.max(horizon, b.warn ?? 0)) return true;
     return false;
+  }
+  /** the next lane across from closed `lane` towards the nearest open one: with two lanes closed that step is into the other closed lane, and it is the only way out */
+  stepOut(seg: Seg, lane: number, s: number): number | null {
+    if (lane < 0 || lane >= seg.lanes || !this.laneClosed(seg, lane, s)) return null;
+    for (let d = 1; d < seg.lanes; d++) {
+      for (const l of [lane - d, lane + d]) if (l >= 0 && l < seg.lanes && !this.laneClosed(seg, l, s)) return lane + Math.sign(l - lane);
+    }
+    return null;
   }
   /** where AI traffic in a dropped lane waits to merge: the taper, unless the lane alongside is coned off there, when nothing could ever merge and the queue would shut out the crews, so it waits beyond the cones */
   private mergeHold(seg: Seg, lane: number): number {
@@ -792,7 +803,7 @@ export class Traffic {
     const seg = v.seg;
     // a merge lane only leads into the edge lane: if that lane is coned off further ahead, merge anyway and move over after
     const fromAux = v.lane >= seg.lanes || v.lane < 0;
-    if (!v.ignoreBlock && tgt >= 0 && tgt < seg.lanes && !this.trapped(v) && this.laneClosed(seg, tgt, v.s, fromAux ? 250 : 1500)) return false;
+    if (!v.ignoreBlock && tgt >= 0 && tgt < seg.lanes && !this.trapped(v) && this.laneClosed(seg, tgt, v.s, fromAux ? 250 : 1500) && tgt !== this.stepOut(seg, v.lane, v.s)) return false;
     const tl = seg.laneLat(tgt);
     const a0 = tl - v.w / 2 - 2, a1 = tl + v.w / 2 + 2;
     const P = v.isPlayer;
@@ -903,10 +914,10 @@ export class Traffic {
     // a coned-off lane ahead: get out of it early
     if (!v.ignoreBlock) {
       let hit = false;
-      for (const b of seg.blocksAhead(v.s, 1400)) if (b.lane === v.lane && v.s < b.s1 && b.s0 - v.s < 1400) hit = true;
+      for (const b of seg.blocksAhead(v.s, MERGE_ZONE)) if (b.lane === v.lane && v.s < b.s1 && b.s0 - v.s < Math.max(1400, b.warn ?? 0)) hit = true;
       if (hit) {
-        const trapped = this.trapped(v);
-        const opts = [v.lane - 1, v.lane + 1].filter((l) => l >= 0 && l < n && (trapped || !this.laneClosed(seg, l, v.s)));
+        const trapped = this.trapped(v), out = this.stepOut(seg, v.lane, v.s);
+        const opts = [v.lane - 1, v.lane + 1].filter((l) => l >= 0 && l < n && (trapped || l === out || !this.laneClosed(seg, l, v.s)));
         opts.sort((x, y) => (Number(this.laneClosed(seg, x, v.s)) - Number(this.laneClosed(seg, y, v.s))) || this.laneGapAhead(v, y) - this.laneGapAhead(v, x));
         if (opts.length) this.ask(v, opts[0], true);
         return;

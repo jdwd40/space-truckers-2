@@ -1,9 +1,10 @@
 import Phaser from 'phaser';
 import { Network, Seg, LW } from './network';
-import { Traffic, Veh } from './traffic';
+import { Traffic, Veh, MERGE_ZONE } from './traffic';
 import { clamp, pick, rand } from './geom';
 import type { GlowLayer } from './glow';
 import { SPEEDS, bumperCrashAt, bumperFee, bumperRepair } from './state';
+import type { Site } from './roadworks';
 
 /** one lane of a cordon on one section, in that section's coordinates: a cordon over a join has a block on each side of it */
 export interface Block { lane: number; s0: number; s1: number; inc: Incident; seg: Seg }
@@ -193,6 +194,8 @@ export class Incidents {
     // keep clear of slip roads; merging traffic needs the edge lane open for a while after a merge lane ends
     for (const z of seg.aux) if ((z.type === 'merge' ? z.s1 + 1200 : z.s1) > a && z.s0 < b) return false;
     for (const st of seg.stops) if (st.s > a && st.s < b) return false;
+    // an incident at roadworks could shut the only lane left open
+    for (const k of seg.blocksAhead(a, b - a + MERGE_ZONE)) if (k.warn && k.s1 + 300 > a && k.s0 - k.warn < b) return false;
     return true;
   }
 
@@ -351,18 +354,18 @@ export class Incidents {
   }
 
   // ------------------------------------------------------------ queries for the player's guidance
-  hazardAhead(seg: Seg, s: number): { d: number; lanes: number[]; inc: Incident } | null {
-    let best: { d: number; lanes: number[]; inc: Incident } | null = null;
+  hazardAhead(seg: Seg, s: number): { d: number; lanes: number[]; inc: Incident | Site } | null {
+    let best: { d: number; lanes: number[]; inc: Incident | Site } | null = null;
     for (const b of seg.blocksAhead(s, 2400)) {
       if (b.s1 < s - 20) continue;
       const d = Math.max(0, b.s0 - s);
       if (d > 2400) continue;
-      if (!best || d < best.d) best = { d, lanes: (b.inc as Incident).lanes, inc: b.inc as Incident };
+      if (!best || d < best.d) best = { d, lanes: (b.inc as Incident | Site).lanes, inc: b.inc as Incident | Site };
     }
     return best;
   }
-  laneBlockedAhead(seg: Seg, lane: number, s: number, range: number): { d: number; inc: Incident } | null {
-    for (const b of seg.blocksAhead(s, range)) if (b.lane === lane && b.s1 > s - 20 && b.s0 - s < range) return { d: Math.max(0, b.s0 - s), inc: b.inc as Incident };
+  laneBlockedAhead(seg: Seg, lane: number, s: number, range: number): { d: number; inc: Incident | Site } | null {
+    for (const b of seg.blocksAhead(s, range)) if (b.lane === lane && b.s1 > s - 20 && b.s0 - s < range) return { d: Math.max(0, b.s0 - s), inc: b.inc as Incident | Site };
     return null;
   }
   inSlowZone(seg: Seg, s: number): boolean {

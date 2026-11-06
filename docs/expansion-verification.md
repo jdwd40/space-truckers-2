@@ -49,8 +49,16 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Repeat at desktop and narrow portrait sizes, including a resize during the incident.
 - Pause during the transition; simulation and camera movement must remain frozen until resume.
 
+### Roadworks (#7)
+
+- Find a site on the map (amber dot). Amber gantries at 2 km, 1 km and 300 m must say which lanes are closed and which way to keep.
+- The road markings on the approach must show a green arrow on every open lane and a red cross on every closed one; the sat-nav lane display must match them.
+- Every closed lane must have a barrier at the start and end of the works, with a barrier line along the open lanes.
+- Stay in a closed lane: your rig must stop at the barrier and pressing A or D must take you out, including from the far lane of a two-lane closure.
+- Watch traffic slow on the approach, leave the closed lanes, zip in at the barrier when busy, and pick up speed after the works.
+
 ## Scope boundaries
 
-Roadworks creation is still tracked separately in #7. Congestion-aware routing must understand existing lane blocks, but supporting blocks is not evidence that roadworks, warning signs or construction crews have been implemented.
+Roadworks are placed once when the world is built and stay for the session. Sites sit wholly inside one road section, clear of joins, lane tapers, slip roads, signals and stations.
 
 A pull request is not a deployment. Changes remain on the feature branch until reviewed and merged.

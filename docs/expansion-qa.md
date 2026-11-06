@@ -30,5 +30,5 @@ Ran the Vite development build in Chromium with controlled development-only play
 
 - This is a scoped simulation and visual smoke test, not a complete delivery playthrough on every route, a long-session performance benchmark, or a physical mobile-device test.
 - Congestion balance and traffic density still merit normal gameplay review.
-- Roadworks creation remains separately tracked in #7; it is not implemented or closed here.
+- Roadworks are covered by #7; see the roadworks checklist in `expansion-verification.md`.
 - The pull request is not merged or deployed by this work.

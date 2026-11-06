@@ -69,7 +69,8 @@ export class Seg {
   svc: Services | null = null;
   limits: Int8Array = new Int8Array(1);
   road = '';
-  blocks: { lane: number; s0: number; s1: number; inc: unknown }[] = [];
+  /** closed lanes; `warn` is how far before s0 a signed closure already counts as closed, for merging and spawning */
+  blocks: { lane: number; s0: number; s1: number; inc: unknown; warn?: number }[] = [];
   localOK = false;
   density = 1;
   trucky = false;
