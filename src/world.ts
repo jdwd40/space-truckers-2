@@ -8,6 +8,7 @@ import { angDiff, clamp, pick, rand, Pt } from './geom';
 import { G, SPEEDS, CLASSES, Job, bus, toast, hint, rankOf, RANKS, save, FUEL_PRICE, money, tankMult, cabSpeed, cabAccel, PAX_MAX, PAX_PAY } from './state';
 import { sfx } from './audio';
 import { Incidents, Incident } from './incidents';
+import { Roadworks } from './roadworks';
 import { Outposts } from './outposts';
 import { Landmarks } from './scenery';
 import { Favours } from './favours';
@@ -85,7 +86,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private navigationT = 0;
   costs: Record<string, number> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
-  inc!: Incidents; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
+  inc!: Incidents; works!: Roadworks; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
   outposts!: Outposts; decoG!: Phaser.GameObjects.Graphics;
   landmarks!: Landmarks; landG!: Phaser.GameObjects.Graphics; favours!: Favours;
@@ -105,6 +106,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     makeTextures(this);
     makeGlowTextures(this);
     this.net = new Network();
+    // before drawWorld, which bakes the warning signs along with the rest
+    this.works = new Roadworks(this.net);
+    this.works.place();
     this.layer = this.add.layer();
     this.mapLayer = this.add.layer();
     this.cameras.main.setBackgroundColor(0x0a1030);
@@ -538,7 +542,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const base = p.pend ?? p.lane;
     const tgt = base + d;
     if (tgt >= 0 && tgt < n) {
-      if (this.traffic.laneClosed(seg, tgt, p.s)) { toast('That lane is coned off ahead', '#ffd27a', 1500); sfx.warn(); return; }
+      if (this.traffic.laneClosed(seg, tgt, p.s) && tgt !== this.traffic.stepOut(seg, base, p.s)) { toast('That lane is coned off ahead', '#ffd27a', 1500); sfx.warn(); return; }
       const so = this.squeezeOffer;
       if (so && so.dir === d && this.clk - so.t < 4 && p.pend === null) { p.squeeze = true; this.squeezeOffer = null; toast('Squeezing in — watch the other ships!', '#ffb4a0', 1500); }
       this.traffic.ask(p, tgt, true); p.state = 'drive'; sfx.whoosh(); return;
@@ -935,6 +939,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.updateVisuals(dt);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
     this.inc.draw(this.incG, this.glow, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
+    this.works.draw(this.incG, this.glow, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.decoG.clear(); this.landG.clear();
     this.outposts.update(this.decoG, this.fxTop, this.glowTop, this.net, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.landmarks.update(this.landG, this.fxTop, this.glowTop, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
@@ -1084,7 +1089,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.hazardMsg = '';
     if (seg.kind === 'motorway' && p.state !== 'crashed') {
       const hz = this.inc.hazardAhead(seg, p.s);
-      if (hz) {
+      if (hz?.inc.kind === 'roadworks') {
+        const site = hz.inc;
+        if (p.lane >= 0 && p.lane < seg.lanes && this.inc.laneBlockedAhead(seg, p.lane, p.s, 2200)) this.hazardMsg = `🚧 Your lane closes ahead — press ${site.dir < 0 ? 'A to move left' : 'D to move right'}`;
+        else this.hazardMsg = `🚧 Roadworks — ${site.sign}`;
+        hint('roadworks', 'Roadworks ahead: barriers close some lanes. The sat-nav and the road markings show which stay open. Move over early; if your lane is still shut at the barrier your rig stops there until you change lane.');
+      } else if (hz) {
         const what = hz.inc.kind === 'accident' ? 'Accident' : 'Breakdown';
         if (p.lane >= 0 && p.lane < seg.lanes && this.inc.laneBlockedAhead(seg, p.lane, p.s, 2000)) this.hazardMsg = `⚠ ${what} ahead — press A or D to move over`;
         else if (this.inc.inSlowZone(seg, p.s)) this.hazardMsg = '👮 Police are directing traffic — keep it slow';
@@ -1104,7 +1114,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   private computeNav(): NavInfo {
     const p = this.player, seg = p.seg;
-    const lanesAll: boolean[] | null = seg.kind === 'motorway' ? Array.from({ length: seg.lanes }, (_, i) => !this.traffic.dropping(seg, i, p.s) && !this.traffic.deadLane(seg, i, p.s)) : null;
+    const lanesAll: boolean[] | null = seg.kind === 'motorway' ? Array.from({ length: seg.lanes }, (_, i) => !this.traffic.dropping(seg, i, p.s) && !this.traffic.deadLane(seg, i, p.s) && !this.traffic.laneClosed(seg, i, p.s)) : null;
     if (!p.goal) return { title: 'Free roam', sub: 'Dock at any station for new jobs', dist: 0, arrow: 0, lanes: lanesAll, aux: 0, remain: 0 };
     if (this.pstate === 'fuel') return { title: 'Refuelling', sub: 'Filling the tank…', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
     let d = 0, ss = p.s, next: Trans | null = null, total = 0;
@@ -1121,6 +1131,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const hz = seg.kind === 'motorway' && p.state !== 'crashed' ? this.inc.hazardAhead(seg, p.s) : null;
     if (hz && hz.d < 2200 && (!next || d > hz.d + 500)) {
       const open = Array.from({ length: seg.lanes }, (_, i) => !hz.lanes.includes(i));
+      if (hz.inc.kind === 'roadworks') return { title: 'Roadworks ahead', sub: hz.inc.sign, dist: hz.d, arrow: 'warn', lanes: open, aux: 0, remain: total };
       return { title: hz.inc.kind === 'accident' ? 'Accident ahead' : 'Breakdown ahead', sub: 'Police cordon — use an open lane', dist: hz.d, arrow: 'warn', lanes: open, aux: 0, remain: total };
     }
     if (!next) {
@@ -1407,6 +1418,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const pulse = 0.55 + 0.45 * Math.sin(this.clk * 6);
       this.mapMarker.fillStyle(0xff4b3e, 0.9); this.mapMarker.fillCircle(q.x, q.y, 190);
       this.mapMarker.lineStyle(60, 0xffffff, pulse); this.mapMarker.strokeCircle(q.x, q.y, 260);
+    }
+    for (const site of this.works.sites) {
+      const q = site.seg.path.at(site.s0);
+      this.mapMarker.fillStyle(0xffb020, 0.9); this.mapMarker.fillCircle(q.x, q.y, 170);
     }
     const t = p.route.find((x) => x.type === 'exit');
     if (t) {

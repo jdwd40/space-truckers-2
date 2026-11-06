@@ -142,3 +142,32 @@ describe('world load lifecycle', () => {
     expect(p.maxBrake).toBe(380);
   });
 });
+
+describe('changing lane at a closure', () => {
+  function closedScene() {
+    const scene = simulatedRig(-1, 0);
+    const p = scene.player, seg = p.seg;
+    for (const lane of [1, 2]) seg.blocks.push({ lane, s0: 1012, s1: 2000, inc: null, warn: 2200 });
+    G.mode = 'drive';
+    return { scene, p, seg };
+  }
+  it('takes the player out of the far lane of a two-lane closure, one lane at a time', () => {
+    const { scene, p, seg } = closedScene();
+    p.lane = 2; p.lat = seg.laneLat(2);
+    scene.laneChange(-1);
+    expect(p.pend).toBe(1);
+  });
+  it('shows closed lanes on the sat-nav without a job as well', () => {
+    const { scene } = closedScene();
+    expect((scene as any).computeNav().lanes).toEqual([true, false, false]);
+  });
+  it('still refuses a move further into the closure', () => {
+    const { scene, p, seg } = closedScene();
+    p.lane = 1; p.lat = seg.laneLat(1);
+    scene.laneChange(1);
+    expect(p.pend).toBeNull();
+    p.lane = 0; p.lat = seg.laneLat(0);
+    scene.laneChange(1);
+    expect(p.pend).toBeNull();
+  });
+});
