@@ -31,6 +31,7 @@ export class UIScene extends Phaser.Scene {
   toastBox!: Phaser.GameObjects.Container; toastT!: Phaser.GameObjects.Text; toastG!: Phaser.GameObjects.Graphics; toastTimer = 0;
   hintBox!: Phaser.GameObjects.Container; hintT!: Phaser.GameObjects.Text; hintG!: Phaser.GameObjects.Graphics; hintTimer = 0;
   muteBtn!: Btn;
+  mapBtn!: Btn;
   modal: Phaser.GameObjects.Container | null = null;
   /** the repair bay quote on screen, if any: it is answered with its buttons, Enter (authorise) or Esc (decline) */
   quoteOpen = false;
@@ -64,6 +65,8 @@ export class UIScene extends Phaser.Scene {
     bus.on('repairQuote', (q: RepairQuote) => this.openQuote(q));
     bus.on('board', (st: Station, jobs: Job[], summary: any) => { this.pendingBoard = { st, jobs, summary }; this.time.delayedCall(summary ? 900 : 200, () => this.openBoard()); });
     bus.on('zone', (z: ZoneDef) => { this.pendingZone = z; });
+    // the sector map covers the whole screen: hide the HUD under it and bring it back as it was
+    bus.on('sectormap', (open: boolean) => this.root.setVisible(!open));
     bus.on('police', (reason: string, fine: number) => this.showToast(fine > 0 ? `🚓 Pulled over: ${reason} — fined ${money(fine)}` : `🚓 Pulled over: ${reason} — just a warning this time!`, '#ffb4b4', 5000));
     const kb = this.input.keyboard!;
     kb.on('keydown', (e: KeyboardEvent) => this.onKey(e));
@@ -76,19 +79,22 @@ export class UIScene extends Phaser.Scene {
       else if (e.key === 'Escape' || e.key === 'Backspace') this.answerQuote(false);
       return;
     }
-    if (e.key === 'Escape' || e.key.toLowerCase() === 'p') { this.togglePause(); return; }
+    const k = e.key.toLowerCase();
+    // the sector map takes the keys while it is open: M, Esc or P close it, everything else waits
+    if (this.world.sectorOpen) { if (k === 'm' || k === 'escape' || k === 'p') this.world.closeSectorMap(); return; }
+    if (k === 'escape' || k === 'p') { this.togglePause(); return; }
     if (this.modal) {
       if ((e.key === 'Enter' || e.key === ' ') && G.mode === 'title') this.startGame();
       return;
     }
-    const k = e.key.toLowerCase();
     if (k >= '1' && k <= '5') bus.emit('speed', Number(k));
     else if (k === 'b' || k === ' ') bus.emit('brake');
     else if (k === 'a' || k === 'arrowleft') bus.emit('lane', -1);
     else if (k === 'd' || k === 'arrowright') bus.emit('lane', 1);
     else if (k === 'w' || k === 'arrowup') bus.emit('speed', clamp(G.speedSet + 1, 1, 5));
     else if (k === 's' || k === 'arrowdown') { if (G.speedSet <= 1) bus.emit('brake'); else bus.emit('speed', G.speedSet - 1); }
-    else if (k === 'm') this.toggleMute();
+    else if (k === 'm') this.openSectorMap();
+    else if (k === 'n') this.toggleMute();
     else if (k === 'e') bus.emit('act');
     // radio: R / Q change station (E is taken by favours), - and + volume, V DJ voice
     else if (k === 'r') { sfx.init(); radio.start(); radio.next(); }
@@ -97,6 +103,8 @@ export class UIScene extends Phaser.Scene {
     else if (k === '=' || k === '+') radio.setVolume(radio.volume + 1);
     else if (k === 'v') { radio.toggleVoice(); toast(radio.voiceOn ? 'DJ voice on' : 'DJ voice off', '#9fe9ff', 1500); }
   }
+  /** the sector map opens over the drive only (not the title, job board, garage or pause menu) */
+  private openSectorMap() { if (!this.modal && this.world.openSectorMap()) sfx.click(); }
   private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; if (G.muted) radio.cancelSpeech(); }
   // ------------------------------------------------------------------ pause
   /** freeze gameplay (the world scene skips its update while G.paused) and show the pause menu; call again to resume */
@@ -113,7 +121,7 @@ export class UIScene extends Phaser.Scene {
     const b = this.btn(W / 2, H * 0.36 + 130 * u, 280 * u, 62 * u, 'Resume', 24, () => this.togglePause(), 0x1f8a5a, 0x7ff0c0);
     c.add(b.c);
     c.add(this.txt(W / 2, H * 0.36 + 190 * u, 'Esc or P to resume', 15, '#8fa6d8', false, [0.5, 0.5]));
-    c.add(this.txt(W / 2, H * 0.36 + 214 * u, 'R / Q radio station · − / + volume · V DJ voice · M mute', 13, '#8fa6d8', false, [0.5, 0.5]));
+    c.add(this.txt(W / 2, H * 0.36 + 214 * u, 'M sector map · R / Q radio station · − / + volume · V DJ voice · N mute', 13, '#8fa6d8', false, [0.5, 0.5]));
   }
 
   // ------------------------------------------------------------------ helpers
@@ -147,6 +155,7 @@ export class UIScene extends Phaser.Scene {
     const u = this.u;
     if (this.root) this.root.destroy(true);
     this.root = this.add.container(0, 0);
+    if (this.world.sectorOpen) this.root.setVisible(false);
     this.last = {};
     const R = this.root;
     // money & rank
@@ -169,6 +178,8 @@ export class UIScene extends Phaser.Scene {
     this.fuelT = this.txt(W - 26 * u, 22 * u, '', 13, '#bcd2ff', true, [1, 0]); R.add(this.fuelT);
     this.muteBtn = this.btn(W - 300 * u, 43 * u, 52 * u, 52 * u, '♪', 22, () => this.toggleMute()); R.add(this.muteBtn.c);
     const pb = this.btn(W - 360 * u, 43 * u, 52 * u, 52 * u, 'II', 20, () => this.togglePause()); R.add(pb.c);
+    // sector map, under pause and mute (clear of the speed bar and sat-nav on a narrow portrait screen too)
+    this.mapBtn = this.btn(W - 330 * u, 99 * u, 112 * u, 40 * u, 'MAP  (M)', 15, () => this.openSectorMap(), 0x1c2a52, CYAN); R.add(this.mapBtn.c);
     // trucker radio
     this.radioG = this.add.graphics(); R.add(this.radioG);
     this.drawRadioPanel(0);
