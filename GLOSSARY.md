@@ -69,6 +69,32 @@ _Avoid_: Origin, yard
 The time by which a contract must be delivered to count as early. Delivering exactly on the deadline counts as early.
 _Avoid_: Target, time limit
 
+## Players and sessions
+
+**Account**:
+A player's identity on the game server, needed only for multiplayer.
+_Avoid_: User, profile, login
+
+**Career**:
+An account's progress in one role: money, reputation or patrol score, and owned vehicles. Each account has a trucker career and a patrol career.
+_Avoid_: Save, progress, character
+
+**Solo save**:
+Single-player progress kept on the player's device (and in cloud saves), separate from any career.
+_Avoid_: Career, offline career
+
+**Role**:
+What a player drives in a session: trucker or officer. Chosen when joining.
+_Avoid_: Class, side, team
+
+**Session**:
+One shared world that players join by link, holding at most eight players.
+_Avoid_: Room, lobby, match, server
+
+**Authority**:
+The single place a session's world is simulated and its rules are decided. In multiplayer that is the game server; in solo it is the player's own browser.
+_Avoid_: Host, master, server (when meaning the rules owner)
+
 ## Navigation
 
 **Sector map**:
