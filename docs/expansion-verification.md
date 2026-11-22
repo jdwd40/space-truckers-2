@@ -64,6 +64,13 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Corridor (#22): drive Harbor Run and Frost Line. Limit signs must show 4 away from the stations (3 near them), Harbor Run must have one camera per carriageway, each after a "Speed check" sign, and Frost Line must have no cameras and no "Speed check" signs.
 - Corridor (#22): at Harbor Prime, take a one-trailer contract to Glacier Outpost. The sat-nav must send you along Polar Express. Drive it at the posted limit: pass two "Speed check" signs and cameras and two lay-bys, with no fuel stop, and deliver early (about 114 s against a 131 s deadline) on about 40% of a tank.
 - Corridor (#22): take the same contract but leave along Harbor Run. At Kestrel Station the rig must wait for dock clearance (about 20 s), then leave along Frost Line by itself without opening the job board. Driven at the posted limit, it arrives just after the deadline (about 135 s) and earns no early bonus.
+- Fuel & Repair (#23): Drive Harbor Run eastbound from Harbor Prime with a trailer. The gantry 1.5 km before Harbor Pumps and the side sign at the exit must read "Fuel & Repair" with the pump-and-spanner icon. Ordinary fuel stops must not mention repair.
+- Fuel & Repair (#23): Take the exit. On the entry road the sat-nav must say "Fuel stop · press D for the repair bay". Press D: a toast confirms the repair bay; press A to switch back to the pumps, then D again.
+- Fuel & Repair (#23): The rig must turn off beside the pumps into the hatched bay under the yellow roof and stop at the white line. A quote must appear reading "No damage to repair", total ¢0.
+- Fuel & Repair (#23): Authorise it (button or Enter): control returns, the rig pulls out and merges back onto Harbor Run eastbound beyond the facility, finding a gap in traffic by itself. Repeat with Decline (button or Esc).
+- Fuel & Repair (#23): Repeat at Frost Fuel on Frost Line towards Glacier Outpost, and check the quote at desktop and narrow portrait sizes.
+- Fuel & Repair (#23): Without pressing D, the rig must go to the pumps and refuel as at any fuel stop, then rejoin the same carriageway. Run low on fuel before Harbor Pumps: the sat-nav must guide you to it.
+- Fuel & Repair (#23): Watch AI traffic at both facilities: it uses the pumps, never the repair bay, and merges back in without stopping on the carriageway.
 
 ## Scope boundaries
 
