@@ -54,6 +54,7 @@ export class MapInspector {
     map.hovers.push((at, view) => this.hoverAt(at, HOVER_PX / view.zoom));
     map.blockers.push((x, y) => !!this.cardBox && x >= this.cardBox.x0 && x <= this.cardBox.x1 && y >= this.cardBox.y0 && y <= this.cardBox.y1);
     map.overlays.push((g, _v, px) => this.drawMarks(g, px));
+    map.layouts.push(() => this.refresh());
   }
 
   /** the next exit the player can still take on the carriageway they are on */
@@ -144,7 +145,7 @@ export class MapInspector {
   /** draw the card for what is picked or hovered, and the next-exit pill */
   refresh() {
     this.card?.destroy(true); this.card = null; this.cardBox = null;
-    const m = this.map, u = m.uiScale, W = m.scale.width, H = m.scale.height;
+    const m = this.map, u = m.u, W = m.scale.width, H = m.scale.height;
     const info = this.picked ? this.picked.info : this.hover;
     const ex = this.nextExit();
     const c = this.card = m.add.container(0, 0); m.chrome.add(c);
@@ -165,7 +166,9 @@ export class MapInspector {
     if (!info && !picked) return;
     const d = info ? describe(info) : { title: 'Map point', sub: '', lines: [] as string[] };
     const actions = picked ? this.actions.filter((a) => !a.when || a.when(picked.at, picked.info)) : [];
-    const cw = Math.min(W - 24 * u, 440 * u), x0 = (W - cw) / 2, pad = 14 * u;
+    // bottom right on a wide screen (the route comparison has the bottom left); on a narrow one at the top, under the
+    // next-exit pill, as the route comparison runs along the bottom
+    const narrow = W < 640, cw = narrow ? W - 24 * u : Math.min(W - 24 * u, 400 * u), x0 = W - cw - 12 * u, pad = 14 * u;
     const parts: Phaser.GameObjects.GameObject[] = [];
     let y = pad;
     const title = txt(x0 + pad, y, d.title, 19, '#ffffff'); parts.push(title); y += title.height + 2 * u;
@@ -178,13 +181,15 @@ export class MapInspector {
     let btnY = -1;
     if (actions.length) { btnY = y + 6 * u; y = btnY + bh; }
     const ch = y + pad;
-    const bottomGap = W < 640 ? 44 * u : 14 * u;
-    const y0 = H - ch - bottomGap;
+    const y0 = narrow ? m.insetTop + (ex ? 52 * u : 10 * u) : H - ch - 14 * u;
     const g = m.add.graphics();
     g.fillStyle(0x000000, 0.3); g.fillRoundedRect(x0 + 3 * u, y0 + 4 * u, cw, ch, 12 * u);
     g.fillStyle(0x111a33, 0.96); g.fillRoundedRect(x0, y0, cw, ch, 12 * u);
     g.lineStyle(2 * u, 0x3c5a9a, 1); g.strokeRoundedRect(x0, y0, cw, ch, 12 * u);
     c.add(g);
+    const back = m.add.zone(x0, y0, cw, ch).setOrigin(0).setInteractive();
+    back.on('pointerdown', (_p: unknown, _x: unknown, _y: unknown, ev: Phaser.Types.Input.EventData) => ev?.stopPropagation?.());
+    c.add(back);
     for (const p of parts) { (p as Phaser.GameObjects.Text).y += y0; c.add(p); }
     if (info && lanesY >= 0 && (info.kind === 'roadworks' || info.kind === 'incident')) {
       const bw = Math.min(46 * u, (cw - 2 * pad) / info.lanes - 6 * u), lg = m.add.graphics();

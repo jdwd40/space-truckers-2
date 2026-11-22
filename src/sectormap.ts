@@ -5,6 +5,7 @@ import { RoadLabels } from './maplabels';
 import { MapInspector } from './mapinspect';
 import type { Pt } from './geom';
 import { SectorView } from './sectorview';
+import { RoutePanel } from './routepanel';
 
 const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const BG = 0x070c22;
@@ -40,7 +41,8 @@ interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number
  * scene only draws it and turns mouse, wheel and touch gestures into pans, zooms and taps.
  *
  * Extension points: `overlays` (extra marks drawn every redraw), `taps` (a tap at a world point), `chrome` (a layer
- * drawn at screen scale over the map, for panels and cards) and `redraw()` after anything they show changes.
+ * drawn at screen scale over the map, for panels and cards), `layouts` (rebuild chrome on open and resize) and `redraw()`
+ * after anything they show changes.
  */
 export class SectorMapScene extends Phaser.Scene {
   world!: WorldScene;
@@ -53,6 +55,8 @@ export class SectorMapScene extends Phaser.Scene {
   blockers: ((x: number, y: number) => boolean)[] = [];
   /** tap and hover inspection; add buttons to its card through `inspector.actions` */
   inspector!: MapInspector;
+  /** called after the map is laid out for the screen (on open and resize), to rebuild chrome panels */
+  layouts: (() => void)[] = [];
   mapCam!: Phaser.Cameras.Scene2D.Camera;
   uiCam!: Phaser.Cameras.Scene2D.Camera;
   mapLayer!: Phaser.GameObjects.Layer;
@@ -99,6 +103,7 @@ export class SectorMapScene extends Phaser.Scene {
     });
     this.buildChrome();
     this.inspector = new MapInspector(this);
+    new RoutePanel(this);
     this.input.addPointer(1);
     this.input.on('wheel', (ptr: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
       if (!this.view) return;
@@ -134,7 +139,7 @@ export class SectorMapScene extends Phaser.Scene {
     this.mapCam.setViewport(0, top, W, H - top); this.uiCam.setSize(W, H);
     this.view.resize(W, H, top);
     this.buildChrome();
-    this.inspector.refresh();
+    for (const fn of this.layouts) fn();
     this.baseZoom = 0;
     this.redraw();
   }
@@ -254,8 +259,7 @@ export class SectorMapScene extends Phaser.Scene {
     }
   }
 
-  get uiScale() { return this.u; }
-  private get u() { return Math.max(0.75, Math.min(1.3, Math.min(this.scale.width / 1280, this.scale.height / 720) * 1.2)); }
+  get u() { return Math.max(0.75, Math.min(1.3, Math.min(this.scale.width / 1280, this.scale.height / 720) * 1.2)); }
   /** the height of the bar along the top; the map is drawn below it */
   get insetTop() { return Math.round(56 * this.u); }
 
@@ -307,7 +311,7 @@ export class SectorMapScene extends Phaser.Scene {
       this.redraw(); return;
     }
     const dr = this.drag;
-    if (!dr && !ptr.isDown && !ptr.wasTouch && ptr.y >= this.insetTop && !this.blockers.some((b) => b(ptr.x, ptr.y))) {
+    if (!dr && !ptr.isDown && !ptr.wasTouch && ptr.y >= this.insetTop && !this.blockers.some((b) => b(ptr.x, ptr.y)) && !this.input.hitTestPointer(ptr).length) {
       const at = v.toWorld(ptr.x, ptr.y, W, H);
       for (const fn of this.hovers) fn(at, v);
       return;
