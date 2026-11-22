@@ -19,3 +19,4 @@ desktop-export/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+proto/headless-sim/dist/

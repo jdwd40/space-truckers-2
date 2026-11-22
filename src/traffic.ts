@@ -68,6 +68,8 @@ export class Veh {
   ignoreBlock = false; emergency = false; reckless = false; squeeze = false; lastLC = -99; stopT = 0; giveUp = 0; resp: unknown = null; partner: Veh | null = null;
   /** Explicitly dispatched incident crew stay outside the ordinary population budget, even after release. */
   incidentResponder = false;
+  /** PROTOTYPE: this rig's own controller, when a session has more than one driver */
+  ctl: PlayerCtl | null = null;
   /** dock gate currently holding this ship, and the one it was last waved through */
   gate: Gate | null = null; gateDone: Gate | null = null;
   /** the segment this ship was on before its current one, where it left it and where it joined this one: the trailers may still be back there */
@@ -139,6 +141,7 @@ export interface PlayerCtl {
 }
 
 interface Zone { x: number; y: number; r: number; w: number }
+interface Zone2 { x: number; y: number; r: number }
 /**
  * A dock gate on a station approach or exit. NPCs stop at `s` and are waved through one at a time; most of the time the
  * gate keeps up with traffic, but every minute or two it has a busy spell and a queue builds up behind it.
@@ -156,6 +159,18 @@ export class Traffic {
   /** extra departures still owed by a convoy leaving a dock, per spawn segment */
   burst: number[] = [];
   view = { x: 0, y: 0, r: 1500 };
+  /** PROTOTYPE: one view per driver in a multi-driver session; solo falls back to the single `view` */
+  views: Zone2[] | null = null;
+  players: Veh[] | null = null;
+  /** PROTOTYPE: false steps every ship at the full rate, wherever the drivers are */
+  lod = true;
+  private vws(): Zone2[] { return this.views ?? [this.view]; }
+  /** the view nearest to (x, y), measured from its edge */
+  private nearestView(x: number, y: number): Zone2 {
+    const all = this.vws(); let best = all[0], bd = Infinity;
+    for (const w of all) { const d = Math.hypot(x - w.x, y - w.y) - w.r; if (d < bd) { bd = d; best = w; } }
+    return best;
+  }
   onAdd: (v: Veh) => void = () => {};
   onRemove: (v: Veh) => void = () => {};
   onCollide: (a: Veh, b: Veh, rv: number) => void = () => {};
@@ -243,7 +258,7 @@ export class Traffic {
     for (const v of this.vs) if (!v.dead && !v.isPlayer && !v.incidentResponder) { count++; if (v.local) locals++; }
     if (count >= TRAFFIC_CFG.maxVehicles || (local && locals >= TRAFFIC_CFG.maxLocals)) return false;
     // Background departures cannot consume the camera-local pool, even after a long session.
-    const reserve = Math.min(TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * TRAFFIC_CFG.hubBoost), Math.floor(TRAFFIC_CFG.maxVehicles * 0.4));
+    const reserve = Math.min(TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * TRAFFIC_CFG.hubBoost) * this.vws().length, Math.floor(TRAFFIC_CFG.maxVehicles * (this.views ? 0.8 : 0.4)));
     return local || count - locals < TRAFFIC_CFG.maxVehicles - reserve;
   }
   spawnNPC(seg: Seg, s: number, local: boolean, forceLane?: number, forceType?: VType, tight = false, speed?: number): Veh | null {
@@ -321,7 +336,7 @@ export class Traffic {
     return this.net.stationGoals(this.net.byId[v.dest]);
   }
   reroute(v: Veh) {
-    if (v.isPlayer) { this.ctl.onRouteNeeded(v); return; }
+    if (v.isPlayer) { (v.ctl ?? this.ctl).onRouteNeeded(v); return; }
     const goals = this.goalsFor(v);
     if (!goals.length) { v.route = []; v.goal = null; return; }
     const side = v.lane >= v.seg.lanes ? 1 : v.lane < 0 ? -1 : 0;
@@ -331,10 +346,14 @@ export class Traffic {
     v.goal = r ? r.goal : null;
   }
   populate() {
-    const initialTarget = Math.min(TRAFFIC_CFG.initialLocals, TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * this.busyAt(this.view.x, this.view.y)), Math.floor(TRAFFIC_CFG.maxVehicles * 0.4));
-    for (let i = 0; i < TRAFFIC_CFG.initialLocals && this.spawnRoom(true); i++) {
-      if (this.vs.filter(v => !v.dead && v.local).length >= initialTarget) break;
-      this.spawnLocal(true);
+    let before = 0;
+    for (const vw of this.vws()) {
+      const initialTarget = before + Math.min(TRAFFIC_CFG.initialLocals, TRAFFIC_CFG.maxLocals, Math.ceil(TRAFFIC_CFG.nearTarget * this.busyAt(vw.x, vw.y)), Math.floor(TRAFFIC_CFG.maxVehicles * 0.4));
+      for (let i = 0; i < TRAFFIC_CFG.initialLocals && this.spawnRoom(true); i++) {
+        if (this.vs.filter(v => !v.dead && v.local).length >= initialTarget) break;
+        this.spawnLocal(true, vw);
+      }
+      before = this.vs.filter(v => !v.dead && v.local).length;
     }
     // Round-robin roads AND their sections: the larger graph must not spend its entire budget on M1.
     const roads = new Map<string, { seg: Seg; phase: number; remaining: number }[]>();
@@ -363,9 +382,9 @@ export class Traffic {
       }
     }
   }
-  private spawnLocal(init = false) {
+  private spawnLocal(init = false, vw: Zone2 = this.view) {
     // Initial locals fill the player's neighbourhood, not random distant hubs. Later arrivals stay out of view.
-    const vw = this.view, near = init ? 0 : vw.r + 250, far = vw.r + 1900;
+    const near = init ? 0 : vw.r + 250, far = vw.r + 1900;
     const cands = this.localSegs.filter((seg) => vw.x > seg.path.minX - far && vw.x < seg.path.maxX + far && vw.y > seg.path.minY - far && vw.y < seg.path.maxY + far);
     if (!cands.length) return;
     for (let tries = 0; tries < 5; tries++) {
@@ -377,6 +396,8 @@ export class Traffic {
       const p = seg.path.at(s);
       const d = Math.hypot(p.x - vw.x, p.y - vw.y);
       if (d < near || d > far || this.inAux(seg, s)) continue;
+      // PROTOTYPE: never pop in where another driver can see it
+      if (!init && this.views && this.views.some((w) => Math.hypot(p.x - w.x, p.y - w.y) < w.r + 250)) continue;
       // quieter stretches between the hubs; haulage roads keep their own lower density
       if (Math.random() > Math.min(1, this.busyAt(p.x, p.y)) * Math.max(0.5, seg.density)) continue;
       this.spawnNPC(seg, s, true);
@@ -399,10 +420,10 @@ export class Traffic {
     for (const sv of this.net.services) this.svcUpdate(sv);
     // level of detail: ships well outside the view take one big step every fourth update instead of four small ones
     this.frame++;
-    const vw = this.view, farR = vw.r + 2500, slot = this.frame & 3;
+    const all = this.vws(), slot = this.frame & 3;
     for (const v of this.vs) {
       if (v.dead) continue;
-      v.far = !v.isPlayer && (Math.abs(v.x - vw.x) > farR || Math.abs(v.y - vw.y) > farR);
+      v.far = this.lod && !v.isPlayer && all.every((vw) => Math.abs(v.x - vw.x) > vw.r + 2500 || Math.abs(v.y - vw.y) > vw.r + 2500);
       if (v.far && (v.id & 3) !== slot) continue;
       this.plan(v);
     }
@@ -455,17 +476,19 @@ export class Traffic {
     this.localT -= dt;
     if (this.localT <= 0) {
       this.localT = 0.12;
-      const vw = this.view, far = vw.r + 1900;
-      let locals = 0, near = 0;
-      for (const v of this.vs) {
-        if (v.dead || v.isPlayer) continue;
-        if (v.local) locals++;
-        if (Math.abs(v.x - vw.x) < far && Math.abs(v.y - vw.y) < far && Math.hypot(v.x - vw.x, v.y - vw.y) < far) near++;
-      }
-      const want = TRAFFIC_CFG.nearTarget * this.busyAt(vw.x, vw.y);
-      if (near < want && locals < TRAFFIC_CFG.maxLocals && this.spawnRoom(true)) {
-        this.spawnLocal();
-        if (near < want * 0.6) this.spawnLocal();
+      for (const vw of this.vws()) {
+        const far = vw.r + 1900;
+        let locals = 0, near = 0;
+        for (const v of this.vs) {
+          if (v.dead || v.isPlayer) continue;
+          if (v.local) locals++;
+          if (Math.abs(v.x - vw.x) < far && Math.abs(v.y - vw.y) < far && Math.hypot(v.x - vw.x, v.y - vw.y) < far) near++;
+        }
+        const want = TRAFFIC_CFG.nearTarget * this.busyAt(vw.x, vw.y);
+        if (near < want && locals < TRAFFIC_CFG.maxLocals && this.spawnRoom(true)) {
+          this.spawnLocal(false, vw);
+          if (near < want * 0.6) this.spawnLocal(false, vw);
+        }
       }
     }
   }
@@ -514,7 +537,7 @@ export class Traffic {
 
   private stopApplies(v: Veh, st: Stop): boolean {
     const state = st.sig.state(st.group);
-    if (v.isPlayer) return this.ctl.obeySignal(v, st, state);
+    if (v.isPlayer) return (v.ctl ?? this.ctl).obeySignal(v, st, state);
     if (state === 'G') return false;
     if (state === 'R') return true;
     return st.s - v.s > (v.v * v.v) / (2 * v.bComf * 1.3);
@@ -611,7 +634,7 @@ export class Traffic {
         }
       }
     }
-    if (v.isPlayer) { const e = this.ctl.extraGap(v); if (e < gap) { gap = Math.max(0.5, e); lv = 0; } }
+    if (v.isPlayer) { const e = (v.ctl ?? this.ctl).extraGap(v); if (e < gap) { gap = Math.max(0.5, e); lv = 0; } }
     return { gap, lv };
   }
 
@@ -619,7 +642,7 @@ export class Traffic {
     const seg = v.seg;
     if (v.state === 'crashed') { v.acc = v.v > 0.5 ? -430 : 0; v.braking = true; v.leadGap = Infinity; return; }
     let vd: number;
-    if (v.isPlayer) vd = this.ctl.desired(v);
+    if (v.isPlayer) vd = (v.ctl ?? this.ctl).desired(v);
     else {
       vd = Math.min(v.vDes, SPEEDS[seg.limitAt(v.s)] * (FAST[v.type] ?? 1));
       if (v.emergency) vd = v.vDes;
@@ -643,7 +666,7 @@ export class Traffic {
       const ss = 9 + Math.max(0, v.v * v.T + (v.v * dv) / (2 * Math.sqrt(v.aMax * v.bComf)));
       a -= v.aMax * (ss / gap) ** 2;
     }
-    if (v.isPlayer) { const bm = this.ctl.brakeMin(v); if (bm !== null) a = Math.min(a, bm); }
+    if (v.isPlayer) { const bm = (v.ctl ?? this.ctl).brakeMin(v); if (bm !== null) a = Math.min(a, bm); }
     if (vd === 0 && v.v < 25) a = Math.min(a, -60);
     v.acc = clamp(a, v.isPlayer ? -v.maxBrake : -700, v.aMax);
     v.braking = v.acc < -35 || (v.v < 4 && vd < 5);
@@ -677,10 +700,10 @@ export class Traffic {
     v.alpha = clamp(al, 0, 1);
     if (!v.isPlayer && (seg.arrStation || seg.despawn) && !seg.endT && v.s > seg.len - 15) v.dead = true;
     if (v.local && !v.isPlayer && v.age > 3 && v.state === 'drive' && !v.emergency) {
-      const dx = v.x - this.view.x, dy = v.y - this.view.y, dd = Math.hypot(dx, dy);
+      const vw = this.nearestView(v.x, v.y), dx = v.x - vw.x, dy = v.y - vw.y, dd = Math.hypot(dx, dy);
       // locals are recycled once they are well out of sight, or out of sight and driving away
       const away = dx * Math.cos(v.h) + dy * Math.sin(v.h) > 0;
-      if (dd > this.view.r + 2600 || (dd > this.view.r + 500 && away)) v.dead = true;
+      if (dd > vw.r + 2600 || (dd > vw.r + 500 && away)) v.dead = true;
     }
   }
 
@@ -732,7 +755,7 @@ export class Traffic {
       this.releasePump(v);
       if (!v.isPlayer) { v.svcTarget = null; v.route = []; this.reroute(v); return; }
     }
-    if (v.isPlayer) this.ctl.onTrans(v, t);
+    if (v.isPlayer) (v.ctl ?? this.ctl).onTrans(v, t);
     if (v.route.length && v.route[0] === t) v.route.shift();
     else if (v.route.length || v.goal) this.reroute(v);
   }
@@ -861,7 +884,7 @@ export class Traffic {
         if (p >= seg.lanes || p < 0) {
           const z = seg.auxAt(v.s + 20, p < 0 ? -1 : 1);
           const ok = (z && v.s < z.s1 - 25) || (v.isPlayer && v.state === 'held') || v.goShoulder;
-          if (!ok) { v.pend = null; if (v.isPlayer) this.ctl.onBlocked('nolane'); }
+          if (!ok) { v.pend = null; if (v.isPlayer) (v.ctl ?? this.ctl).onBlocked('nolane'); }
         }
       }
     }
@@ -875,7 +898,7 @@ export class Traffic {
           if (v.pendWait > (v.pendMand ? (v.isPlayer ? (aux ? 3.5 : 1.4) : 12) : 2.5)) {
             const dir = Math.sign(v.pend - v.lane);
             v.pend = null; v.squeeze = false;
-            if (v.isPlayer) this.ctl.onBlocked(aux ? 'nolane' : 'busy', dir);
+            if (v.isPlayer) (v.ctl ?? this.ctl).onBlocked(aux ? 'nolane' : 'busy', dir);
           }
         }
       }
@@ -887,9 +910,11 @@ export class Traffic {
 
   /** the player's rig touching another ship: report it to the incident manager */
   private collide(dt: number) {
-    const p = this.player;
-    if (!p || p.dead || p.state === 'crashed') return;
     if (this.bumpCool > 0) { this.bumpCool -= dt; return; }
+    for (const p of this.players ?? [this.player]) this.collideOne(p);
+  }
+  private collideOne(p: Veh) {
+    if (!p || p.dead || p.state === 'crashed' || this.bumpCool > 0) return;
     const seg = p.seg;
     if (seg.kind !== 'motorway' && seg.kind !== 'ramp') return;
     for (const o of seg.veh) {
@@ -898,6 +923,7 @@ export class Traffic {
       if (p.s < o.s - o.totLen + 1 || o.s < p.s - p.totLen + 1) continue;
       const rv = Math.hypot(p.v - o.v, p.latVel - o.latVel);
       this.bumpCool = 2.5;
+      this.player = p; // PROTOTYPE: Incidents reads the one `player`
       this.onCollide(p, o, rv);
       break;
     }

@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "proto:headless": "node proto/headless-sim/build.mjs && node proto/headless-sim/dist/headless-sim.mjs"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "0.20.0",
