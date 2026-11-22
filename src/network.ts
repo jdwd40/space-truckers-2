@@ -37,6 +37,8 @@ export interface Crossing { x: number; y: number; h: number; sig: Signal; corner
 export interface Goal { seg: Seg; s: number }
 /** `cost` is the route's travel time in seconds (at the posted limit, plus any delays); `distance` its physical length. */
 export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
+/** a route through a waypoint: `via` is the place on the road it passes, and `goal` is where it ends (`via` itself with no goal) */
+export interface ViaRoute extends Route { via: Goal }
 /** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
 export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
 /** an axis-aligned world rectangle */
@@ -769,6 +771,43 @@ export class Network {
     for (const t of list) { distance += t.fromS - at; at = t.toS; }
     distance += bestG.s - at;
     return { trans: list, goal: bestG, cost: best, distance, diverted };
+  }
+
+  /**
+   * The places a waypoint at a map point (x, y) can mean: the nearest point on each carriageway section within `radius`
+   * (both directions of a road, so a route may reach it either way), dropping any much further than the closest one so a
+   * waypoint on a road does not also mean a slip road beside it. Facilities (services and repair bays) are not waypoints.
+   */
+  waypointGoals(x: number, y: number, radius = 400): Goal[] {
+    const near: { g: Goal; d: number }[] = [];
+    for (const seg of this.segs) {
+      if (seg.kind === 'services' || seg.path.maxX < x - radius || seg.path.minX > x + radius || seg.path.maxY < y - radius || seg.path.minY > y + radius) continue;
+      const n = seg.path.nearest(x, y);
+      if (n.d <= radius) near.push({ g: { seg, s: n.s }, d: n.d });
+    }
+    const best = Math.min(...near.map((c) => c.d));
+    return near.filter((c) => c.d <= best + 150).sort((a, b) => a.d - b.d).map((c) => c.g);
+  }
+
+  /**
+   * The fastest route that passes one of the waypoint places `via` (from `waypointGoals`) and then reaches one of `goals`;
+   * with no goals it ends at the waypoint. Its trans list is the two legs end to end, so it is followed, drawn and costed
+   * like any other route. `avoid` keeps both legs off the named roads, as for `route`. Null when no waypoint place can be
+   * reached, or none leads on to a goal.
+   */
+  routeVia(seg: Seg, s: number, via: Goal[], goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): ViaRoute | null {
+    let best: ViaRoute | null = null;
+    for (const v of via) {
+      const a = this.route(seg, s, [v], auxSide, avoidTraffic, avoid);
+      if (!a) continue;
+      const b = goals.length ? this.route(v.seg, v.s, goals, 0, avoidTraffic, avoid) : null;
+      if (goals.length && !b) continue;
+      const r: ViaRoute = b
+        ? { trans: [...a.trans, ...b.trans], goal: b.goal, cost: a.cost + b.cost, distance: a.distance + b.distance, diverted: a.diverted || b.diverted, via: v }
+        : { ...a, via: v };
+      if (!best || r.cost < best.cost) best = r;
+    }
+    return best;
   }
 
   /**

@@ -3,6 +3,8 @@ import type { WorldScene } from './world';
 import type { Network, Seg } from './network';
 import type { Pt } from './geom';
 import { SectorView } from './sectorview';
+import { toast } from './state';
+import { sfx } from './audio';
 import { RoutePanel } from './routepanel';
 
 const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
@@ -28,8 +30,12 @@ const FEATURE_LOOK: Record<MapFeature['kind'], { fill: number; text: string; r: 
 
 /** draws extra world-space marks over the base map each redraw (route, waypoint, compared routes); `px` is one screen pixel in world units */
 export type MapOverlay = (g: Phaser.GameObjects.Graphics, view: SectorView, px: number) => void;
-/** called with the world point under a tap or click that did not drag (inspection, waypoints) */
+/** called with the world point under a tap or click that did not drag (inspection), or under a long press or right-click (waypoints) */
 export type MapTap = (at: Pt, view: SectorView) => void;
+/** how long a press must be held without moving to count as a long press, in ms */
+const HOLD_MS = 550;
+/** how near (in screen pixels) a long press must be to the waypoint to remove it rather than move it */
+const WAYPOINT_HIT_PX = 30;
 
 interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number; minZoom: number; rot: number }
 
@@ -38,15 +44,17 @@ interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number
  * and redrawn whenever the view changes so it stays sharp at any zoom. The world owns the view state and the pause; this
  * scene only draws it and turns mouse, wheel and touch gestures into pans, zooms and taps.
  *
- * Extension points: `overlays` (extra marks drawn every redraw), `taps` (a tap at a world point), `chrome` (a layer
- * drawn at screen scale over the map, for panels and cards), `layouts` (rebuild chrome on open and resize) and `redraw()`
- * after anything they show changes.
+ * Extension points: `overlays` (extra marks drawn every redraw), `taps` (a tap at a world point), `holds` (a long press
+ * or right-click at a world point), `chrome` (a layer drawn at screen scale over the map, for panels and cards),
+ * `layouts` (rebuild chrome on open and resize) and `redraw()` after anything they show changes. A tap is inspection;
+ * the waypoint is set, moved and removed with a hold, so the two never compete for the same gesture.
  */
 export class SectorMapScene extends Phaser.Scene {
   world!: WorldScene;
   view: SectorView | null = null;
   overlays: MapOverlay[] = [];
   taps: MapTap[] = [];
+  holds: MapTap[] = [];
   /** called after the map is laid out for the screen (on open and resize), to rebuild chrome panels */
   layouts: (() => void)[] = [];
   mapCam!: Phaser.Cameras.Scene2D.Camera;
@@ -61,7 +69,10 @@ export class SectorMapScene extends Phaser.Scene {
   /** the zoom the base map was last tessellated for */
   private baseZoom = 0;
   // gesture state
-  private drag: { id: number; x: number; y: number; moved: number; t: number } | null = null;
+  private drag: { id: number; x: number; y: number; moved: number; t: number; held: boolean } | null = null;
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  /** whether the bar was last built with a "clear waypoint" button */
+  private barWaypoint = false;
   private pinch: { d: number; x: number; y: number } | null = null;
 
   constructor() { super({ key: 'sector', active: false }); }
@@ -92,9 +103,22 @@ export class SectorMapScene extends Phaser.Scene {
       g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, Math.max(200, px * 9));
       g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, Math.max(90, px * 4));
     });
+    // the waypoint: a pin on the road, drawn over the route
+    this.overlays.push((g, _v, px) => {
+      const wp = this.world.waypoint;
+      if (!wp) return;
+      const r = Math.max(160, px * 11), h = r * 1.9;
+      g.fillStyle(0x0c1534, 1); g.fillCircle(wp.x, wp.y - h, r * 1.25);
+      g.fillTriangle(wp.x - r * 0.8, wp.y - h + r * 0.4, wp.x + r * 0.8, wp.y - h + r * 0.4, wp.x, wp.y + px * 2);
+      g.fillStyle(0xff4fd8, 1); g.fillCircle(wp.x, wp.y - h, r);
+      g.fillTriangle(wp.x - r * 0.62, wp.y - h + r * 0.5, wp.x + r * 0.62, wp.y - h + r * 0.5, wp.x, wp.y);
+      g.fillStyle(0xffffff, 1); g.fillCircle(wp.x, wp.y - h, r * 0.4);
+    });
+    this.holds.push((at, v) => this.waypointAt(at, v));
     this.buildChrome();
     new RoutePanel(this);
     this.input.addPointer(1);
+    this.input.mouse?.disableContextMenu();
     this.input.on('wheel', (ptr: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
       if (!this.view) return;
       this.view.zoomAt(ptr.x, ptr.y, Math.exp(-dy * 0.0015), this.scale.width, this.scale.height); this.redraw();
@@ -114,7 +138,7 @@ export class SectorMapScene extends Phaser.Scene {
   }
   hide() {
     this.scene.setVisible(false); this.input.enabled = false;
-    this.drag = null; this.pinch = null;
+    this.drag = null; this.pinch = null; this.cancelHold();
     this.world.cameras.main.setVisible(true); this.world.minicam.setVisible(true);
   }
 
@@ -140,6 +164,7 @@ export class SectorMapScene extends Phaser.Scene {
     const px = 1 / v.zoom;
     const close = v.zoom >= LANES_ZOOM;
     if (close || !this.baseZoom || Math.abs(v.zoom / this.baseZoom - 1) > 0.04) { this.drawBase(px, close); this.baseZoom = v.zoom; }
+    if (this.barWaypoint !== !!this.world.waypoint) this.buildChrome();
     this.over.clear();
     for (const o of this.overlays) o(this.over, v, px);
     const p = this.world.player;
@@ -258,28 +283,86 @@ export class SectorMapScene extends Phaser.Scene {
     c.add(g);
     const txt = (x: number, y: number, s: string, size: number, color: string, ox = 0) =>
       this.add.text(x, y, s, { fontFamily: FONT, fontSize: `${Math.round(size * u)}px`, fontStyle: 'bold', color }).setOrigin(ox, 0.5).setResolution(Math.min(2, window.devicePixelRatio || 1));
-    c.add(txt(18 * u, h / 2, 'SECTOR MAP', 22, '#ffffff'));
+    const title = txt(18 * u, h / 2, 'SECTOR MAP', 22, '#ffffff'); c.add(title);
     const narrow = W < 640;
-    if (!narrow) c.add(txt(W / 2, h / 2, 'Drag to pan · wheel or pinch to zoom · M or Esc to close', 14, '#8fa6d8', 0.5));
     const bw = 104 * u, bh = 40 * u, bx = W - bw / 2 - 12 * u, by = h / 2;
     const bg = this.add.graphics();
     bg.fillStyle(0x5a1f28, 0.95); bg.fillRoundedRect(bx - bw / 2, by - bh / 2, bw, bh, 9 * u);
     bg.lineStyle(2 * u, 0xff6b6b, 1); bg.strokeRoundedRect(bx - bw / 2, by - bh / 2, bw, bh, 9 * u);
     c.add(bg); c.add(txt(bx, by, '✕ Close', 17, '#ffffff', 0.5));
-    if (narrow) c.add(txt(W / 2, this.scale.height - 22 * u, 'Drag to pan · pinch to zoom', 13, '#8fa6d8', 0.5).setStroke('#070c22', 5 * u));
+    if (narrow) c.add(txt(W / 2, this.scale.height - 22 * u, 'Drag to pan · pinch to zoom · hold a road for a waypoint', 13, '#8fa6d8', 0.5).setStroke('#070c22', 5 * u));
     const zone = this.add.zone(bx, by, bw, bh).setInteractive();
     zone.on('pointerdown', (_p: unknown, _x: unknown, _y: unknown, ev: Phaser.Types.Input.EventData) => { ev?.stopPropagation?.(); this.world.closeSectorMap(); });
     c.add(zone);
+    // while a waypoint is set, a button beside Close removes it
+    this.barWaypoint = !!this.world.waypoint;
+    if (this.barWaypoint) {
+      const ww = 132 * u, wx = bx - bw / 2 - 10 * u - ww / 2;
+      const wg = this.add.graphics();
+      wg.fillStyle(0x4a1f4a, 0.95); wg.fillRoundedRect(wx - ww / 2, by - bh / 2, ww, bh, 9 * u);
+      wg.lineStyle(2 * u, 0xff4fd8, 1); wg.strokeRoundedRect(wx - ww / 2, by - bh / 2, ww, bh, 9 * u);
+      c.add(wg); c.add(txt(wx, by, '✕ Waypoint', 17, '#ffffff', 0.5));
+      const wz = this.add.zone(wx, by, ww, bh).setInteractive();
+      wz.on('pointerdown', (_p: unknown, _x: unknown, _y: unknown, ev: Phaser.Types.Input.EventData) => { ev?.stopPropagation?.(); this.removeWaypoint(); });
+      c.add(wz);
+    }
+    // the controls hint goes between the title and the buttons, shortened (or left out) to fit
+    if (narrow) return;
+    const x0 = title.x + title.width + 20 * u, x1 = bx - bw / 2 - (this.barWaypoint ? 152 * u : 0) - 20 * u;
+    for (const hint of ['Drag to pan · wheel to zoom · hold or right-click a road for a waypoint · M to close', 'Hold or right-click a road for a waypoint']) {
+      const t = txt((x0 + x1) / 2, h / 2, hint, 14, '#8fa6d8', 0.5);
+      if (t.width <= x1 - x0) { c.add(t); break; }
+      t.destroy();
+    }
   }
+
+  // ----------------------------------------------------------- waypoint
+  /** a hold at a world point: on the waypoint it removes it, on a road it sets or moves it there */
+  private waypointAt(at: Pt, v: SectorView) {
+    const wp = this.world.waypoint, px = 1 / v.zoom;
+    if (wp && Math.hypot(at.x - wp.x, at.y - wp.y) < WAYPOINT_HIT_PX * px) { this.removeWaypoint(); return; }
+    if (this.world.setWaypoint(at.x, at.y, Math.max(400, 24 * px))) {
+      toast(wp ? 'Waypoint moved' : 'Waypoint set — your route now passes it', '#ff9cec', 2200);
+      sfx.click();
+    } else toast('Hold on a road to set a waypoint', '#ffd27a', 1800);
+    // a waypoint replaces a picked route, so panels showing it are rebuilt
+    for (const fn of this.layouts) fn();
+    this.redraw();
+  }
+  private removeWaypoint() {
+    if (!this.world.waypoint) return;
+    this.world.clearWaypoint();
+    toast('Waypoint removed', '#ff9cec', 1800);
+    sfx.click();
+    for (const fn of this.layouts) fn();
+    this.redraw();
+  }
+  private fireHold(ptr: Phaser.Input.Pointer) {
+    if (!this.view) return;
+    const at = this.view.toWorld(ptr.x, ptr.y, this.scale.width, this.scale.height);
+    for (const fn of this.holds) fn(at, this.view);
+  }
+  private cancelHold() { if (this.holdTimer) clearTimeout(this.holdTimer); this.holdTimer = null; }
 
   // ----------------------------------------------------------- gestures
   private onDown(ptr: Phaser.Input.Pointer) {
     if (ptr.y < this.insetTop) return;
+    this.cancelHold();
+    if (ptr.rightButtonDown()) { this.drag = null; this.fireHold(ptr); return; }
     const p1 = this.input.pointer1, p2 = this.input.pointer2;
     if (p1.isDown && p2.isDown) {
       this.drag = null;
       this.pinch = { d: Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y), x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-    } else this.drag = { id: ptr.id, x: ptr.x, y: ptr.y, moved: 0, t: this.time.now };
+    } else {
+      const dr: NonNullable<SectorMapScene['drag']> = this.drag = { id: ptr.id, x: ptr.x, y: ptr.y, moved: 0, t: this.time.now, held: false };
+      // a press held still is a long press: it fires once, while the finger is still down, and is then no tap. It is
+      // timed in real time, not game time, so a slow frame rate never makes the press feel longer.
+      this.holdTimer = setTimeout(() => {
+        this.holdTimer = null;
+        if (this.drag !== dr || dr.moved > 10 || !ptr.isDown) return;
+        dr.held = true; this.fireHold(ptr); this.redraw();
+      }, HOLD_MS);
+    }
   }
   private onMove(ptr: Phaser.Input.Pointer) {
     const v = this.view;
@@ -302,8 +385,8 @@ export class SectorMapScene extends Phaser.Scene {
   }
   private onUp(ptr: Phaser.Input.Pointer) {
     if (this.pinch) { if (!this.input.pointer1.isDown && !this.input.pointer2.isDown) this.pinch = null; this.drag = null; return; }
-    const dr = this.drag; this.drag = null;
-    if (!dr || dr.id !== ptr.id || dr.moved > 10 || this.time.now - dr.t > 500 || !this.view) return;
+    const dr = this.drag; this.drag = null; this.cancelHold();
+    if (!dr || dr.held || dr.id !== ptr.id || dr.moved > 10 || this.time.now - dr.t > 500 || !this.view) return;
     const at = this.view.toWorld(ptr.x, ptr.y, this.scale.width, this.scale.height);
     for (const fn of this.taps) fn(at, this.view);
   }
