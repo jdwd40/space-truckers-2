@@ -1,3 +1,5 @@
+import { NetProto } from './netproto/netproto';
+import { mountPanel, drawTruth } from './netproto/panel';
 import Phaser from 'phaser';
 import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, Goal, PASS_THROUGH_DWELL, type RouteOption } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
@@ -145,6 +147,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** the route the player picked from the route comparison: the sat-nav keeps off `avoid` until arrival or cancellation */
   routeChoice: { name: string; avoid: ReadonlySet<string> } | null = null;
 
+  netproto: NetProto | null = null; netG: Phaser.GameObjects.Graphics | null = null;
   constructor() { super('world'); }
 
   create() {
@@ -218,7 +221,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.applyUpgrades();
     this.refreshPlayerVis();
     this.traffic.view = { x: this.player.x, y: this.player.y, r: 1600 };
-    this.traffic.populate();
+    // PROTOTYPE netproto: with ?netproto the traffic lives in a simulated authority and reaches this world as snapshots
+    if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('netproto')) {
+      this.netproto = new NetProto(this);
+      mountPanel(this.netproto);
+      this.netG = this.add.graphics().setDepth(DEPTH.fxTop + 1); this.layer.add(this.netG);
+    } else this.traffic.populate();
     this.computeCosts();
     this.buildMap();
     this.camH = this.player.h;
@@ -1166,8 +1174,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     // owes less than a step still simulates what it owes, so the rig never stands still for a frame at 60 fps.
     this.acc += dt;
     let n = 0;
-    while (this.acc >= STEP && n < 2) { this.traffic.update(STEP); this.acc -= STEP; n++; }
-    if (n === 0 && this.acc > 0) { this.traffic.update(this.acc); this.acc = 0; }
+    const step = (d: number) => { if (this.netproto) this.netproto.tick(d); else this.traffic.update(d); };
+    while (this.acc >= STEP && n < 2) { step(STEP); this.acc -= STEP; n++; }
+    if (n === 0 && this.acc > 0) { step(this.acc); this.acc = 0; }
     if (this.acc > STEP) this.acc = STEP;
     if (G.job && G.mode === 'drive' && p.state !== 'crashed') G.job.elapsed += dt;
     for (const lb of this.net.laybys) if (lb.refillT > 0) { lb.refillT -= dt; if (lb.refillT <= 0) { lb.waiting = 1 + Math.floor(Math.random() * 3); this.drawPax(lb); } }
@@ -1177,6 +1186,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.updateZone(dt);
     this.setPieces.update(dt, cam.midPoint.x, cam.midPoint.y, Math.hypot(cam.width, cam.height) / 2 / this.zoomCur, this.zone.id, G.mode === 'drive');
     this.updateVisuals(dt);
+    if (this.netproto) drawTruth(this.netproto, this.netG!);
     const viewR = Math.hypot(cam.width, cam.height) / 2 / this.zoomCur;
     this.inc.draw(this.incG, this.glow, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);
     this.works.draw(this.incG, this.glow, this.clk, cam.midPoint.x, cam.midPoint.y, viewR);

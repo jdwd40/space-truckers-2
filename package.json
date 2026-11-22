@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "proto:netfeel": "vite --open '/?netproto'",
+    "proto:netfeel:measure": "vitest run src/netproto/measure.test.ts",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

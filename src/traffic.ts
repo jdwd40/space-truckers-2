@@ -247,7 +247,7 @@ export class Traffic {
     return local || count - locals < TRAFFIC_CFG.maxVehicles - reserve;
   }
   spawnNPC(seg: Seg, s: number, local: boolean, forceLane?: number, forceType?: VType, tight = false, speed?: number): Veh | null {
-    if (!this.spawnRoom(local)) return null;
+    if (this.ghosts || !this.spawnRoom(local)) return null;
     const q = seg.path.at(s);
     const type = forceType ?? this.randType(seg, this.busyAt(q.x, q.y) > 1);
     const n = seg.lanes;
@@ -390,8 +390,40 @@ export class Traffic {
     for (const seg of this.net.segs) if (seg.veh.length > 1) seg.veh.sort((a, b) => a.s - b.s);
   }
 
+  // ---------- PROTOTYPE netproto: a client world, where only the player's rig is simulated ----------
+  /** every other ship is a ghost, placed from authority snapshots by the prototype */
+  ghosts = false;
+  /** the rig's lane changes wait for the authority instead of being predicted here */
+  holdPlayerLane = false;
+  private updateClient(dt: number) {
+    this.clock += dt; this.frame++;
+    this.indexVehicles();
+    for (const sv of this.net.services) this.svcUpdate(sv);
+    const p = this.player;
+    if (p && !p.dead) { this.plan(p); this.move(p, dt); }
+    this.indexVehicles();
+    this.collide(dt);
+    if (p && !p.dead) { p.lcCool -= dt; this.pending(p, dt); }
+  }
+  addGhost(v: Veh) { this.vs.push(v); v.seg.veh.push(v); }
+  dropGhost(v: Veh) { const i = this.vs.indexOf(v); if (i >= 0) this.vs.splice(i, 1); v.dead = true; this.onRemove(v); }
+  /** pose a ghost from the seg / s / lat the prototype has just set */
+  placeGhost(v: Veh, dt: number) {
+    v.age += dt;
+    const p = v.seg.path.at(v.s, v.lat);
+    v.x = p.x; v.y = p.y; v.h = p.h + Math.atan2(v.latVel, Math.max(v.v, 60));
+    v.pushTrail();
+  }
+  /** move a rig along its road by ds: a prediction correction */
+  nudge(v: Veh, ds: number) {
+    v.s += ds;
+    if (ds > 0) this.transitions(v, ds);
+    else if (v.s < 0) { if (v.prevSeg && v.enterS < 1) { v.seg = v.prevSeg; v.s += v.prevS; v.prevSeg = null; } else v.s = 0; }
+  }
+
   // ---------- core update ----------
   update(dt: number) {
+    if (this.ghosts) { this.updateClient(dt); return; }
     for (const sig of this.net.signals) sig.t += dt;
     this.clock += dt;
     this.indexVehicles();
@@ -865,7 +897,7 @@ export class Traffic {
         }
       }
     }
-    if (v.pend !== null) {
+    if (v.pend !== null && !(v.isPlayer && this.holdPlayerLane)) {
       v.pendT -= dt;
       if (v.pendT <= 0) {
         if (this.safe(v, v.pend)) { v.lane = v.pend; v.pend = null; v.lcCool = (v.reckless ? 1.0 : 2.5) + Math.random() * 2; v.lastLC = this.clock; v.squeeze = false; }
