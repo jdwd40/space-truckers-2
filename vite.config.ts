@@ -1,4 +1,6 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import { cpSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,4 +22,6 @@ function decoders() {
   };
 }
 
-export default defineConfig({ base: "./", plugins: [decoders()], build: { target: "es2022", sourcemap: false } });
+export default defineConfig({ base: "./", plugins: [decoders()], build: { target: "es2022", sourcemap: false },
+  // agent worktrees live under .claude/ and hold full copies of the test suite
+  test: { exclude: [...configDefaults.exclude, ".claude/**"] } });

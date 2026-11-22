@@ -20,6 +20,8 @@ import { SectorView } from './sectorview';
 import type { SectorMapScene } from './sectormap';
 
 const STATION_R = 1250;
+/** A contract deadline is the legal travel time of its fastest route, times this slack, plus a grace period in seconds. */
+const DEADLINE_SLACK = 1.25, DEADLINE_GRACE = 45;
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -31,6 +33,8 @@ const CARGO: Record<string, string[]> = {
 };
 const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, vesta: 4, harbor: 5, glacier: 7, ember: 6 };
 
+/** what a repair bay quotes before any work; in milestone 1 there is never damage, so it is always empty */
+export interface RepairQuote { facility: string; bayId: string; text: string; items: { what: string; cost: number }[]; total: number }
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
 
 interface Vis { keys: string[]; units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
@@ -78,15 +82,22 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** world-space direction of one screen-space unit to the right and down, from the camera rotation: shadows fall that way */
   shX = { x: 1, y: 0 }; shY = { x: 0, y: 1 };
   dockS = new Map<Seg, number>();
-  pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' = 'drive';
+  pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' | 'repair' = 'drive';
   station: Station | null = null;
   fuelTarget: Services | null = null;
+  /** the Fuel & Repair facility whose repair bay the driver chose at its fork */
+  repairTarget: Services | null = null;
+  /** the repair quote on screen while the rig stands in a repair bay */
+  quote: RepairQuote | null = null;
+  /** the rig has been quoted in the bay it is in, and may drive out */
+  bayDone = false;
   holdT = 0; overT = 0; policeCool = 8; overWarnT = 0; autoHold = false; leavingLayby = false; laybySlot: { s: number; occ: unknown } | null = null;
   escort: { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; s: number; seg: Seg; lat: number; v: number; t: number } | null = null;
   redAhead = false; limit = 5; blink = 0; routeRedraw = 0; remain = 0; nav: NavInfo | null = null;
   routeDiverted = false;
   private navigationT = 0;
-  costs: Record<string, number> = {};
+  /** The fastest legal route between each pair of stations: its travel time in seconds and physical distance. */
+  trips: Record<string, { time: number; distance: number }> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; works!: Roadworks; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
@@ -161,6 +172,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     this.favours = new Favours(this.net, this.traffic, this);
     bus.on('act', () => this.favours.act());
+    bus.on('repairReply', (authorise: boolean) => this.answerQuote(authorise));
     this.inc = new Incidents(this.net, this.traffic, {
       playerCrashed: (inc, atFault, other, fee) => this.onPlayerCrashed(inc, atFault, other, fee),
       playerReleased: (inc) => this.onPlayerReleased(inc),
@@ -409,7 +421,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker.clear();
     const p = this.player;
     if (!p.goal) return;
-    const pts = this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 260);
+    const pts = this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 260);
     if (pts.length < 2) return;
     g.lineStyle(150, 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
     g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
@@ -476,7 +488,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (this.upcomingT > 0) return this.upcomingCache;
     this.upcomingT = 3;
     const p = this.player;
-    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 400) : [];
+    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 400) : [];
     if (!pts.length) for (let s = p.s; s < p.seg.len; s += 400) pts.push(p.seg.path.at(s));
     let d = 0, lx = p.x, ly = p.y;
     this.upcomingCache = null;
@@ -573,6 +585,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   laneChange(d: number) {
     if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.player.state === 'crashed') return;
     const p = this.player, seg = p.seg, n = seg.lanes;
+    const fork = seg.endT?.to.svc;
+    if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
     if (seg.kind !== 'motorway') { toast('Stay on the slip road for now', '#ffd27a', 1600); return; }
     const base = p.pend ?? p.lane;
     const tgt = base + d;
@@ -595,7 +609,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   // PlayerCtl
   desired(v: Veh): number {
     if (v.state === 'crashed') return 0;
-    if (this.pstate === 'docked' || this.pstate === 'fuel' || this.pstate === 'pulled' || this.pstate === 'parked') return 0;
+    if (this.pstate === 'docked' || this.pstate === 'fuel' || this.pstate === 'pulled' || this.pstate === 'parked' || this.pstate === 'repair') return 0;
     if (G.braking) return 0;
     const cab = cabSpeed();
     let vd = SPEEDS[G.speedSet] * cab;
@@ -609,6 +623,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   extraGap(v: Veh): number {
     if (this.pstate === 'docking') { const d = this.dockS.get(v.seg); if (d !== undefined) return d - v.s; }
     if (this.pstate === 'park') { const z = v.seg.auxAt(v.s, 1); if (this.laybySlot) return this.laybySlot.s - v.s; if (z) return z.s1 - 20 - v.s; }
+    if (v.seg.bay && !this.bayDone) return v.seg.bay.stopS - v.s;
     return Infinity;
   }
   obeySignal(_v: Veh, _st: Stop, state: 'G' | 'A' | 'R'): boolean { return (G.braking || this.autoHold) && state !== 'G'; }
@@ -621,13 +636,38 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   onTrans(v: Veh, t: Trans) {
     if (t.type === 'exit') {
       this.favours.onExit(t);
-      if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
+      if (t.svc?.bay) toast(`Pulling into ${t.svc.name} — press D for the repair bay, A for the pumps`, '#9fe9ff', 3200);
+      else if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
     } else if (t.type === 'merge') {
       hint('merge', 'Merging: your rig slides into traffic by itself when there is a gap — just keep your speed.');
     }
+    if (t.from.bay) { this.bayDone = false; this.repairTarget = null; }
     if (v.route[0] !== t) this.computeRoute(false);
+  }
+  /** at a Fuel & Repair fork: head for the repair bay, or back to the pumps */
+  chooseBay(sv: Services, bay: boolean) {
+    if ((this.repairTarget === sv) === bay) return;
+    this.repairTarget = bay ? sv : null;
+    toast(bay ? `Heading for the ${sv.name} repair bay` : `Heading for the ${sv.name} pumps`, '#9fe9ff', 1800);
+    sfx.click();
+    this.computeRoute(false);
+  }
+  /** the rig has pulled up in a repair bay: show the quote. Vehicle condition arrives later, so there is never damage. */
+  private openQuote(sv: Services) {
+    this.pstate = 'repair'; G.braking = false;
+    this.quote = { facility: sv.name, bayId: sv.bay!.id, text: 'No damage to repair', items: [], total: 0 };
+    bus.emit('repairQuote', this.quote);
+  }
+  /** answer the repair quote (authorise or decline) and drive on */
+  answerQuote(authorise: boolean) {
+    if (this.pstate !== 'repair') return;
+    this.pstate = 'drive'; this.bayDone = true; this.repairTarget = null; this.quote = null;
+    if (G.speedSet === 0) G.speedSet = 2;
+    toast(authorise ? 'Nothing needed doing — no charge. Merging back onto the road.' : 'Quote declined. Merging back onto the road.', '#7ff0c0', 3000);
+    sfx.click();
+    this.computeRoute(false);
   }
   onBlocked(kind: 'busy' | 'nolane' = 'nolane', dir = 0) {
     if (kind === 'busy' && dir !== 0) {
@@ -702,6 +742,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   // ----------------------------------------------------------- jobs & routing
   goals() {
+    if (this.repairTarget?.bay) return [{ seg: this.repairTarget.bay.seg, s: this.repairTarget.bay.stopS }];
     if (this.fuelTarget) return [{ seg: this.fuelTarget.seg, s: this.fuelTarget.pumpS }];
     if (G.job) return this.net.stationGoals(this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to]);
     return [];
@@ -715,6 +756,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
+    if (!r && this.repairTarget) { this.repairTarget = null; this.computeRoute(announce); return; }
     if (!r && this.fuelTarget) { this.fuelTarget = null; this.computeRoute(announce); return; }
     if (announce) toast('Route updated', '#9fe9ff', 1400);
     this.drawRoute();
@@ -734,16 +776,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private computeCosts() {
     for (const a of this.net.stations) for (const b of this.net.stations) {
       if (a === b) continue;
-      let best = Infinity;
-      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best) best = r.cost; }
-      this.costs[a.id + '>' + b.id] = best;
+      let best = { time: Infinity, distance: Infinity };
+      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best.time) best = { time: r.cost, distance: r.distance }; }
+      this.trips[a.id + '>' + b.id] = best;
     }
   }
   makeJobs(st: Station): Job[] {
     const rank = rankOf(G.earned);
     const first = G.deliveries === 0;
     let others: Station[] = Phaser.Utils.Array.Shuffle(this.net.stations.filter((o) => o !== st));
-    if (first) others = others.sort((a, b) => (this.costs[st.id + '>' + a.id] ?? 0) - (this.costs[st.id + '>' + b.id] ?? 0));
+    if (first) others = others.sort((a, b) => (this.trips[st.id + '>' + a.id]?.time ?? 0) - (this.trips[st.id + '>' + b.id]?.time ?? 0));
     const jobs: Job[] = [];
     for (let i = 0; i < 3; i++) {
       const remote = !first && i === 2 && Math.random() < 0.65;
@@ -751,11 +793,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       if (remote) { from = others[0]; to = pick(this.net.stations.filter((o) => o !== from)); }
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
-      const dist = this.costs[from.id + '>' + to.id] + (remote ? this.costs[st.id + '>' + from.id] : 0);
+      const trip = this.trips[from.id + '>' + to.id], leg = remote ? this.trips[st.id + '>' + from.id] : { time: 0, distance: 0 };
+      const dist = trip.distance + leg.distance, legal = trip.time + leg.time;
       const pay = Math.round(((80 + (dist / 1000) * 15) * CLASSES[cls].mult * (remote ? 1.2 : 1)) / 5) * 5;
       jobs.push({
         id: `${from.id}-${to.id}`, cargo: pick(CARGO[from.id]), from: from.id, to: to.id, cls, pay, dist,
-        stage: from === st ? 'deliver' : 'pickup', target: dist / 225 + 45, elapsed: 0,
+        stage: from === st ? 'deliver' : 'pickup', target: legal * DEADLINE_SLACK + DEADLINE_GRACE, elapsed: 0,
         locked: CLASSES[cls].rank > rank, remote,
       });
     }
@@ -1045,6 +1088,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         this.computeRoute(false);
       }
     }
+    // repair bay: pull up for a quote
+    if (seg.bay && !this.bayDone && this.pstate === 'drive' && p.v < 3 && p.s > seg.bay.stopS - 20) this.openQuote(seg.bay.facility);
     // docking
     const dS = this.dockS.get(seg);
     if (dS !== undefined && this.pstate === 'drive' && p.s > dS - 1300) {
@@ -1152,6 +1197,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const lanesAll: boolean[] | null = seg.kind === 'motorway' ? Array.from({ length: seg.lanes }, (_, i) => !this.traffic.dropping(seg, i, p.s) && !this.traffic.deadLane(seg, i, p.s) && !this.traffic.laneClosed(seg, i, p.s)) : null;
     if (!p.goal) return { title: 'Free roam', sub: 'Dock at any station for new jobs', dist: 0, arrow: 0, lanes: lanesAll, aux: 0, remain: 0 };
     if (this.pstate === 'fuel') return { title: 'Refuelling', sub: 'Filling the tank…', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
+    if (this.pstate === 'repair') return { title: 'Repair bay', sub: 'Read the quote', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
+    if (seg.bay && !this.bayDone) return { title: 'Repair bay', sub: 'Pull up for a quote', dist: Math.max(0, seg.bay.stopS - p.s), arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
     let d = 0, ss = p.s, next: Trans | null = null, total = 0;
     for (const t of p.route) {
       const leg = t.fromS - ss;
@@ -1171,7 +1218,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (!next) {
       if (seg.kind === 'ramp' && seg.endT?.type === 'merge') return { title: `Merge onto ${seg.endT.to.name}`, sub: 'Your rig finds a gap by itself', dist: seg.len - p.s, arrow: 0, lanes: null, aux: 0, remain: total };
-      if (seg.svc || (seg.kind === 'ramp' && seg.endT?.to.svc)) return { title: 'Pull up at a free pump', sub: seg.svc ? 'Queue if the pumps are busy' : 'Fuel stop', dist: total, arrow: 'fuel', lanes: null, aux: 0, remain: total };
+      if (seg.svc || (seg.kind === 'ramp' && seg.endT?.to.svc)) {
+        const sub = seg.svc ? 'Queue if the pumps are busy' : seg.endT!.to.svc!.bay ? 'Fuel stop · press D for the repair bay' : 'Fuel stop';
+        return { title: 'Pull up at a free pump', sub, dist: total, arrow: 'fuel', lanes: null, aux: 0, remain: total };
+      }
       return { title: this.fuelTarget ? destName : `Dock at ${destName}`, sub: 'Stay on this road', dist: total, arrow: 'dock', lanes: lanesAll, aux: 0, remain: total };
     }
     if (next.kind === 'dock') return { title: `Dock at ${next.label}`, sub: 'Change roads here — your rig carries on by itself', dist: d, arrow: 'dock', lanes: lanesAll, aux: 0, remain: total };

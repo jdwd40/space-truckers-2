@@ -9,15 +9,21 @@ const BG = 0x070c22;
 /** from this zoom (screen px per world unit) lanes are wide enough to draw lane lines */
 const LANES_ZOOM = 0.18;
 
-/** something the sector map labels and marks: a facility today; Fuel & Repair and Police HQ join it as they are built */
-export interface MapFeature { kind: 'services' | 'layby'; name: string; x: number; y: number }
+/** a facility the sector map marks and labels, by its stable network id; Police HQ joins these when it is built */
+export interface MapFeature { id: string; kind: 'fuel' | 'fuel-repair' | 'layby'; name: string; x: number; y: number }
 /** the facilities the sector map shows, from the network */
 export function mapFeatures(net: Network): MapFeature[] {
   return [
-    ...net.services.map((sv) => ({ kind: 'services' as const, name: sv.name, x: sv.x, y: sv.y })),
-    ...net.laybys.map((lb) => ({ kind: 'layby' as const, name: lb.name, x: lb.x, y: lb.y })),
+    ...net.services.map((sv) => ({ id: sv.id, kind: sv.kind, name: sv.name, x: sv.x, y: sv.y })),
+    ...net.laybys.map((lb) => ({ id: lb.id, kind: 'layby' as const, name: lb.name, x: lb.x, y: lb.y })),
   ];
 }
+/** marker and label colours by facility kind */
+const FEATURE_LOOK: Record<MapFeature['kind'], { fill: number; text: string; r: number; minZoom: number; suffix: string }> = {
+  fuel: { fill: 0x2f7de1, text: '#9fd0ff', r: 160, minZoom: 0.05, suffix: '' },
+  'fuel-repair': { fill: 0xe08a2f, text: '#ffd09a', r: 180, minZoom: 0.035, suffix: ' · Fuel & Repair' },
+  layby: { fill: 0x3c9a6a, text: '#a8e6c4', r: 90, minZoom: 0.12, suffix: '' },
+};
 
 /** draws extra world-space marks over the base map each redraw (route, waypoint, compared routes); `px` is one screen pixel in world units */
 export type MapOverlay = (g: Phaser.GameObjects.Graphics, view: SectorView, px: number) => void;
@@ -74,7 +80,7 @@ export class SectorMapScene extends Phaser.Scene {
     this.overlays.push((g, _v, px) => {
       const p = this.world.player;
       if (!p.goal) return;
-      const pts = this.world.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, Math.max(80, px * 6));
+      const pts = this.world.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, Math.max(80, px * 6));
       if (pts.length < 2) return;
       g.lineStyle(Math.max(100, px * 6), 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
       g.lineStyle(Math.max(60, px * 3.5), 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
@@ -171,9 +177,9 @@ export class SectorMapScene extends Phaser.Scene {
         g.strokePoints(seg.path.pts(0, seg.len, seg.laneLat(i) - seg.laneW / 2, step) as Phaser.Types.Math.Vector2Like[]);
     }
     for (const f of mapFeatures(net)) {
-      const r = Math.max(f.kind === 'services' ? 160 : 90, px * (f.kind === 'services' ? 6 : 4));
+      const look = FEATURE_LOOK[f.kind], r = Math.max(look.r, px * (f.kind === 'layby' ? 4 : 6));
       g.fillStyle(0x0a1128, 1); g.fillCircle(f.x, f.y, r * 1.35);
-      g.fillStyle(f.kind === 'services' ? 0x2f7de1 : 0x3c9a6a, 1); g.fillCircle(f.x, f.y, r);
+      g.fillStyle(look.fill, 1); g.fillCircle(f.x, f.y, r);
       g.fillStyle(0xffffff, 1); g.fillCircle(f.x, f.y, r * 0.42);
     }
   }
@@ -195,8 +201,8 @@ export class SectorMapScene extends Phaser.Scene {
       }
     }
     for (const f of mapFeatures(net)) {
-      const minZoom = f.kind === 'services' ? 0.05 : 0.12;
-      this.labels.push({ t: mk(f.name, 12, f.kind === 'services' ? '#9fd0ff' : '#a8e6c4', '#0a1128'), x: f.x, y: f.y, prio: 2, minZoom, rot: 0 });
+      const look = FEATURE_LOOK[f.kind];
+      this.labels.push({ t: mk(f.name + look.suffix, 12, look.text, '#0a1128'), x: f.x, y: f.y, prio: 2, minZoom: look.minZoom, rot: 0 });
     }
   }
 
