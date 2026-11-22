@@ -609,7 +609,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const p = this.player, seg = p.seg, n = seg.lanes;
     const fork = seg.endT?.to.svc;
     if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
-    if (seg.hq && seg === seg.hq.yard && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
+    if (seg.hq && seg === seg.hq.loop && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
     if (seg.kind !== 'motorway') { toast('Stay on the slip road for now', '#ffd27a', 1600); return; }
     const base = p.pend ?? p.lane;
     const tgt = base + d;
@@ -665,7 +665,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.favours.onExit(t);
       if (t.svc?.bay) toast(`Pulling into ${t.svc.name} — press D for the repair bay, A for the pumps`, '#9fe9ff', 3200);
       else if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
-      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for Polar Express or D for Kestrel Station at the loop`, '#9fe9ff', 3200);
+      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for ${t.to.hq.waysOut[0]} or D for ${t.to.hq.waysOut[1]} at the loop`, '#9fe9ff', 3200);
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
     } else if (t.type === 'merge') {
@@ -677,9 +677,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   /** in Police HQ's turning loop: leave by the way out on the left (d < 0) or the right */
   chooseHQExit(d: number) {
-    const yard = this.player.seg, end = yard.path.at(yard.len);
+    const loop = this.player.seg, end = loop.path.at(loop.len);
     const side = (t: Trans) => { const q = t.to.path.at(Math.min(200, t.to.len)); return -Math.sin(end.h) * (q.x - end.x) + Math.cos(end.h) * (q.y - end.y); };
-    const ways = yard.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
+    const ways = loop.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
     const pick = d < 0 ? ways[0] : ways[ways.length - 1];
     if (!pick || pick === this.hqOut) return;
     this.hqOut = pick;

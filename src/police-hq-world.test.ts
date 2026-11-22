@@ -62,7 +62,7 @@ describe('driving into and out of Police HQ', () => {
     expect(step(w, 60, () => !!p.seg.hq), 'turns off for HQ').toBe(true);
     // turning off the last stretch before the Kestrel gate is no longer docking there
     expect(scene.pstate).toBe('drive');
-    expect(step(w, 90, () => p.seg === hq.yard && p.s > hq.stopS), 'drives round the loop').toBe(true);
+    expect(step(w, 90, () => p.seg === hq.loop && p.s > hq.stopS), 'drives round the loop').toBe(true);
     const out = to === 'kestrel' ? link.r : link.f;
     expect(step(w, 90, () => out.includes(p.seg) && p.lane >= 0 && p.lane < p.seg.lanes), 'back onto the link').toBe(true);
     if (to === 'kestrel') expect(step(w, 90, () => G.mode === 'board'), 'docks to deliver at Kestrel Station').toBe(true);
@@ -78,7 +78,7 @@ describe('choosing the way out of Police HQ', () => {
     const w = world('kestrel', null, (l) => [l.f[0], 150, 0]);
     const { scene, p, link, hq } = w;
     scene.laneChange(-1);
-    expect(step(w, 60, () => p.seg === hq.yard)).toBe(true);
+    expect(step(w, 60, () => p.seg === hq.loop)).toBe(true);
     scene.laneChange(d);
     expect(step(w, 90, () => link.f.includes(p.seg) || link.r.includes(p.seg))).toBe(true);
     expect(link[onto]).toContain(p.seg);
@@ -88,7 +88,7 @@ describe('choosing the way out of Police HQ', () => {
     const w = world('glacier', 'kestrel', (l) => [l.f[0], 150, 0]);
     const { scene, p, link, hq } = w;
     scene.laneChange(-1);
-    expect(step(w, 60, () => p.seg === hq.yard)).toBe(true);
+    expect(step(w, 60, () => p.seg === hq.loop)).toBe(true);
     scene.laneChange(-1);
     expect(step(w, 90, () => link.f.includes(p.seg) || link.r.includes(p.seg))).toBe(true);
     expect(link.f).toContain(p.seg);

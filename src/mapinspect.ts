@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { dist, type Inspection, type NextExit } from './network';
+import { dist, FACILITY_NAME, type Inspection, type NextExit } from './network';
 import type { Pt } from './geom';
 import { SPEEDS } from './speeds';
 import { KMH } from './state';
@@ -27,8 +27,7 @@ export function describe(info: Inspection): { title: string; sub: string; lines:
     };
   }
   if (info.kind === 'facility') {
-    const what = info.facility === 'fuel-repair' ? 'Fuel & Repair' : info.facility === 'fuel' ? 'Fuel stop' : info.facility === 'police-hq' ? 'Off Kestrel Link' : 'Lay-by';
-    return { title: info.name, sub: what, lines: info.services };
+    return { title: info.name, sub: info.where ?? FACILITY_NAME[info.facility], lines: info.services };
   }
   const where = `${info.carriageway}${info.towards ? ` towards ${info.towards}` : ''}`;
   const title = info.kind === 'roadworks' ? 'Roadworks' : info.incident === 'accident' ? 'Accident' : 'Breakdown';

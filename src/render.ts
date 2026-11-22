@@ -666,7 +666,7 @@ function drawRepairBay(scene: Phaser.Scene, sv: Services, add: (obj: Phaser.Game
 /** Police HQ: the station house inside its turning loop */
 function drawPoliceHQ(scene: Phaser.Scene, hq: PoliceHQ, add: (obj: Phaser.GameObjects.Graphics, bb: Box, box: Box, scale: number) => void) {
   // the building sits inside the loop, between its way in and its way out
-  const yard = hq.yard, a = yard.path.at(0), b = yard.path.at(yard.len);
+  const loop = hq.loop, a = loop.path.at(0), b = loop.path.at(loop.len);
   const cx = (a.x + b.x) / 2 - 320, cy = (a.y + b.y) / 2;
   const g = scene.add.graphics().setDepth(DEPTH.road(0) - 0.3).setPosition(cx, cy);
   const W = 240, H = 44;

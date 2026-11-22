@@ -11,7 +11,7 @@ const link = road('Kestrel Link');
 const hq = () => net.facility('hq:kestrel') as PoliceHQ;
 /** does the route drive on any of Police HQ's roads? */
 const entersHQ = (r: Route) => r.trans.some((t) => t.to.hq || t.from.hq) || !!r.goal.seg.hq;
-const hqGoal = () => [{ seg: hq().yard, s: hq().stopS }];
+const hqGoal = () => [{ seg: hq().loop, s: hq().stopS }];
 
 describe('Police HQ', () => {
   it('has a stable ID and is called Police HQ', () => {
@@ -69,20 +69,20 @@ describe('Police HQ', () => {
       const before = net.signs.filter((sg) => sg.seg === exit.from && sg.s < exit.fromS && sg.panels.some((p) => p.title === 'Police HQ'));
       expect(before.length, chain[0].name).toBeGreaterThanOrEqual(1);
     }
-    const out = net.signs.filter((sg) => sg.seg === hq().yard).flatMap((sg) => sg.panels.map((p) => p.title));
+    const out = net.signs.filter((sg) => sg.seg === hq().loop).flatMap((sg) => sg.panels.map((p) => p.title));
     expect(out).toEqual(expect.arrayContaining(['Polar Express', 'Kestrel Station']));
   });
 
   it('lets a driver leave towards Polar Express or towards Kestrel Station without turning back', () => {
     const polar = road('Polar Express'), kestrel = net.byId.kestrel;
-    const yard = hq().yard, from = hq().stopS;
-    const towardsPolar = net.route(yard, from, [{ seg: polar.f[0], s: polar.f[0].path.nearest(900, -19400).s + 3000 }]);
-    const towardsKestrel = net.route(yard, from, net.stationGoals(kestrel));
+    const loop = hq().loop, from = hq().stopS;
+    const towardsPolar = net.route(loop, from, [{ seg: polar.f[0], s: polar.f[0].path.nearest(900, -19400).s + 3000 }]);
+    const towardsKestrel = net.route(loop, from, net.stationGoals(kestrel));
     const ways = new Set<Seg>();
     for (const [what, r, onto] of [['Polar Express', towardsPolar, link.f], ['Kestrel Station', towardsKestrel, link.r]] as const) {
       expect(r, what).not.toBeNull();
       expect(r!.trans.some((t) => t.kind === 'uturn' || t.kind === 'dock'), what).toBe(false);
-      // out of the yard and straight onto the link carriageway that goes there
+      // out of the loop and straight onto the link carriageway that goes there
       const join = r!.trans.find((t) => t.type === 'merge')!;
       expect(onto, what).toContain(join.to);
       expect(r!.trans.indexOf(join), what).toBeLessThanOrEqual(1);
