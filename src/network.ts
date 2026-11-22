@@ -39,6 +39,37 @@ export interface Goal { seg: Seg; s: number }
 export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
 /** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
 export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
+/** A road under an inspected point: its carriageway, where that goes, the posted limit there and the carriageway's cameras. */
+export interface RoadInspection { kind: 'road'; road: string; carriageway: string; towards: string | null; limit: number; cameras: Camera[]; x: number; y: number }
+/** A facility under an inspected point, by its stable ID, with what a driver can use there. */
+export interface FacilityInspection { kind: 'facility'; id: string; name: string; facility: 'fuel' | 'fuel-repair' | 'layby'; services: string[]; x: number; y: number }
+/**
+ * Lanes closed by roadworks or an incident: the carriageway, which lanes (0 is the left lane) are closed and open, and
+ * a line saying so. (x, y) is its middle, for a marker; `extent` the closed stretch of each section it covers.
+ */
+export interface ClosureInspection {
+  kind: 'roadworks' | 'incident'; incident?: 'breakdown' | 'accident';
+  road: string; carriageway: string; towards: string | null;
+  lanes: number; closed: number[]; open: number[]; status: string;
+  x: number; y: number; extent: { seg: Seg; s0: number; s1: number }[];
+}
+/** what Network.inspect finds under a world point */
+export type Inspection = RoadInspection | FacilityInspection | ClosureInspection;
+
+/** the next exit ahead on a carriageway: where it goes, how far ahead (metres) and where it leaves the carriageway */
+export interface NextExit { trans: Trans; label: string; kind: Trans['kind']; side: 1 | -1; d: number; x: number; y: number }
+
+/** "Right lane closed", "2 left lanes closed", "Lanes 2–3 of 4 closed": lane 0 is the left lane */
+export function closedLanesText(closed: number[], lanes: number): string {
+  const n = closed.length;
+  if (n >= lanes) return 'All lanes closed';
+  const run = closed.every((l, i) => i === 0 || l === closed[i - 1] + 1);
+  const side = run && closed[0] === 0 ? 'left' : run && closed[n - 1] === lanes - 1 ? 'right' : null;
+  if (side) return n === 1 ? `${side[0].toUpperCase()}${side.slice(1)} lane closed` : `${n} ${side} lanes closed`;
+  return `Lane${n === 1 ? '' : 's'} ${closed.map((l) => l + 1).join(', ')} of ${lanes} closed`;
+}
+/** how close to a fuel stop's or a lay-by's middle an inspected point counts as on it */
+const FACILITY_REACH = 260, LAYBY_REACH = 150;
 /** an axis-aligned world rectangle */
 export interface Bounds { x0: number; y0: number; x1: number; y1: number; w: number; h: number }
 /** how far the map extent reaches past the outermost road edge: room for a station disc and its label */
@@ -685,6 +716,122 @@ export class Network {
   facility(id: string): Services | RepairBay | Layby | undefined {
     for (const sv of this.services) { if (sv.id === id) return sv; if (sv.bay?.id === id) return sv.bay; }
     return this.laybys.find((l) => l.id === id);
+  }
+
+  /** every section of seg's carriageway, from its start */
+  carriageway(seg: Seg): Seg[] {
+    let first = seg; while (first.prev) first = first.prev;
+    const out: Seg[] = [];
+    for (let at: Seg | null = first; at; at = at.next) out.push(at);
+    return out;
+  }
+  /** the road name and direction of seg's carriageway, as the sector map shows them */
+  private describeCarriageway(seg: Seg): { road: string; carriageway: string; towards: string | null } {
+    const chain = this.carriageway(seg);
+    const towards = chain[chain.length - 1].arrStation?.name ?? null;
+    // M1 and M2 name their carriageways (M1 East); elsewhere a carriageway is known by its road and where it goes
+    const named = seg.name !== `${seg.road} F` && seg.name !== `${seg.road} R` && seg.name !== seg.road;
+    return { road: seg.road, carriageway: named ? seg.name : seg.road, towards };
+  }
+
+  /**
+   * The next exit a rig at s on seg can still take on its carriageway (a junction, a facility or a turn back), looking on
+   * into the following sections, with how far ahead it is and where it leaves. As in routing, an exit less than 90 m
+   * ahead only counts when the rig is already in its exit lane (`auxSide`). Null off a road or past the last exit.
+   */
+  nextExit(seg: Seg, s: number, auxSide = 0): NextExit | null {
+    if (seg.kind !== 'motorway') return null;
+    for (let at: Seg | null = seg, off = 0; at; off += at.len, at = at.next) {
+      let best: Trans | null = null;
+      for (const t of at.outs) {
+        if (t.type !== 'exit') continue;
+        const ahead = off + t.fromS - s;
+        if (ahead < -1 || (ahead < 90 && auxSide !== t.side)) continue;
+        if (!best || t.fromS < best.fromS) best = t;
+      }
+      if (best) {
+        const p = this.auxPt(at, best.fromS, best.side);
+        return { trans: best, label: best.svc?.name ?? best.label, kind: best.kind, side: best.side, d: off + best.fromS - s, x: p.x, y: p.y };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The lane closures on the network now: roadworks sites, and incidents from the moment their cordon goes up until it
+   * is taken down. Read from the closed lanes on each section, so a cleared incident is gone at once.
+   */
+  closures(): ClosureInspection[] {
+    const groups = new Map<unknown, { seg: Seg; s0: number; s1: number; lane: number }[]>();
+    for (const seg of this.segs) for (const b of seg.blocks) {
+      let g = groups.get(b.inc);
+      if (!g) groups.set(b.inc, (g = []));
+      g.push({ seg, s0: b.s0, s1: b.s1, lane: b.lane });
+    }
+    const out: ClosureInspection[] = [];
+    for (const [inc, blocks] of groups) {
+      const what = inc as { kind?: string; sign?: string };
+      const seg = blocks[0].seg, lanes = seg.lanes;
+      const closed = [...new Set(blocks.map((b) => b.lane))].sort((a, b) => a - b);
+      const open = Array.from({ length: lanes }, (_, i) => i).filter((l) => !closed.includes(l));
+      const extent: ClosureInspection['extent'] = [];
+      for (const b of blocks) {
+        const e = extent.find((x) => x.seg === b.seg);
+        if (e) { e.s0 = Math.min(e.s0, b.s0); e.s1 = Math.max(e.s1, b.s1); } else extent.push({ seg: b.seg, s0: b.s0, s1: b.s1 });
+      }
+      const main = extent.reduce((a, b) => (b.s1 - b.s0 > a.s1 - a.s0 ? b : a)), mid = main.seg.path.at((main.s0 + main.s1) / 2);
+      const roadworks = what.kind === 'roadworks';
+      out.push({
+        kind: roadworks ? 'roadworks' : 'incident', ...(roadworks ? {} : { incident: what.kind === 'accident' ? 'accident' : 'breakdown' }),
+        ...this.describeCarriageway(seg), lanes, closed, open,
+        status: roadworks && what.sign ? what.sign : closedLanesText(closed, lanes), x: mid.x, y: mid.y, extent,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * What is under a world point, for inspection on the sector map: a lane closure (incident or roadworks), then a
+   * facility, then a road. `radius` is how far from the point to look (a finger's width on the map), in world units.
+   */
+  inspect(x: number, y: number, radius = 0): Inspection | null {
+    let hit: { d: number; c: ClosureInspection } | null = null;
+    for (const c of this.closures()) for (const e of c.extent) {
+      const half = (e.seg.lanes * e.seg.laneW) / 2;
+      for (let s = e.s0; s <= e.s1 + 49; s += 50) {
+        const p = e.seg.path.at(Math.min(s, e.s1)), d = Math.max(0, Math.hypot(p.x - x, p.y - y) - half);
+        if (d <= radius && (!hit || d < hit.d)) hit = { d, c };
+      }
+    }
+    if (hit) return (hit as { c: ClosureInspection }).c;
+    let fac: { d: number; info: FacilityInspection } | null = null;
+    const near = (fx: number, fy: number, reach: number, info: () => FacilityInspection) => {
+      const d = Math.hypot(fx - x, fy - y);
+      if (d <= reach + radius && (!fac || d < fac.d)) fac = { d, info: info() };
+    };
+    for (const sv of this.services) near(sv.x, sv.y, FACILITY_REACH, () => ({
+      kind: 'facility', id: sv.id, name: sv.name, facility: sv.kind, x: sv.x, y: sv.y,
+      services: [`Fuel · ${sv.size} pump${sv.size === 1 ? '' : 's'}`, ...(sv.bay ? ['Repair bay'] : [])],
+    }));
+    for (const lb of this.laybys) near(lb.x, lb.y, LAYBY_REACH, () => ({
+      kind: 'facility', id: lb.id, name: lb.name, facility: 'layby', x: lb.x, y: lb.y, services: ['Lay-by', 'Passengers'],
+    }));
+    if (fac) return (fac as { info: FacilityInspection }).info;
+    let best: { d: number; level: number; seg: Seg; s: number } | null = null;
+    for (const seg of this.segs) {
+      if (seg.kind !== 'motorway' && seg.kind !== 'avenue') continue;
+      const half = (seg.lanes * seg.laneW) / 2 + (seg.shoulder ? LW : 0), r = half + radius;
+      if (x < seg.path.minX - r || x > seg.path.maxX + r || y < seg.path.minY - r || y > seg.path.maxY + r) continue;
+      const n = seg.path.nearest(x, y), d = Math.max(0, n.d - half);
+      if (d > radius) continue;
+      if (!best || d < best.d - 1 || (d <= best.d + 1 && seg.level > best.level)) best = { d, level: seg.level, seg, s: n.s };
+    }
+    if (!best) return null;
+    const { seg, s } = best, chain = this.carriageway(seg), at = seg.path.at(s);
+    return {
+      kind: 'road', ...this.describeCarriageway(seg), limit: seg.limitAt(s),
+      cameras: this.cameras.filter((c) => chain.includes(c.seg)), x: at.x, y: at.y,
+    };
   }
 
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
