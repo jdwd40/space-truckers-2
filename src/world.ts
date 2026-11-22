@@ -785,8 +785,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   goals() {
     if (this.repairTarget?.bay) return [{ seg: this.repairTarget.bay.seg, s: this.repairTarget.bay.stopS }];
     if (this.fuelTarget) return [{ seg: this.fuelTarget.seg, s: this.fuelTarget.pumpS }];
-    if (G.job) return this.net.stationGoals(this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to]);
-    return [];
+    const st = this.jobStation();
+    return st ? this.net.stationGoals(st) : [];
   }
   computeRoute(announce: boolean) {
     const p = this.player;
@@ -957,15 +957,20 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     hint('start', 'Pick a speed (1–5) at the bottom of the screen, or press a number key, to pull away.');
   }
   depart(st: Station, targetId: string, auto = false) {
-    let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
     // with a waypoint set, leave by the gate that is fastest through it (if any gate reaches it); otherwise keep to a picked route
-    const via = this.waypoint?.via, avoid = via ? undefined : this.routeChoice?.avoid;
-    const cost = (seg: Seg, thru: boolean) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals, 0, false, avoid))?.cost ?? Infinity;
+    const via = this.waypoint?.via, choice = via ? undefined : this.routeChoice?.avoid;
+    const cost = (seg: Seg, thru: boolean, avoid?: ReadonlySet<string>) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals, 0, false, avoid))?.cost ?? Infinity;
+    /** the cheapest departure, and its cost (the first departure, at Infinity, when none reaches the goal) */
+    const cheapest = (thru: boolean, avoid?: ReadonlySet<string>) => {
+      let best = st.dep[0], bc = Infinity;
+      for (const seg of st.dep) { const c = cost(seg, thru, avoid); if (c < bc) { bc = c; best = seg; } }
+      return { best, bc };
+    };
     const thru = !!via && st.dep.some((seg) => cost(seg, true) < Infinity);
-    for (const seg of st.dep) { const c = cost(seg, thru); if (c < bc) { bc = c; best = seg; } }
+    const picked = cheapest(thru, choice);
     // a picked route that cannot leave from here gives way to the fastest departure
-    if (avoid && bc === Infinity) for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    const best = choice && picked.bc === Infinity ? cheapest(false).best : picked.best;
     const p = this.player;
     // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
     const lane = best.lanes - 1, lat = best.laneLat(lane);
