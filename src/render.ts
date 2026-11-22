@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, LW, TAPER, Sign, SignPanel, Station } from './network';
+import { Network, Seg, LW, TAPER, Sign, SignPanel, Station, Services } from './network';
 import { Pt, rand, clamp as clampV } from './geom';
 import type { Outposts } from './outposts';
 import type { Baker, Box } from './bake';
@@ -641,6 +641,28 @@ function bboxOf(pts: Pt[], pad: number) {
   return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
 }
 
+/** the repair bay of a Fuel & Repair facility: a marked stopping box under an open-sided workshop roof */
+function drawRepairBay(scene: Phaser.Scene, sv: Services, add: (obj: Phaser.GameObjects.Graphics, bb: Box, box: Box, scale: number) => void) {
+  const bay = sv.bay!, seg = bay.seg, half = seg.laneW / 2;
+  const bb = { x0: bay.x - 500, y0: bay.y - 500, x1: bay.x + 500, y1: bay.y + 500 };
+  const g = scene.add.graphics().setDepth(DEPTH.road(0) + 0.1).setPosition(bay.x, bay.y).setRotation(bay.h);
+  // hatched box where the rig pulls up, and a stop line at its front
+  g.lineStyle(3, 0xffc83c, 0.95); g.strokeRect(-150, -half + 3, 160, seg.laneW - 6);
+  g.lineStyle(2, 0xffc83c, 0.45);
+  for (let x = -140; x < 10; x += 22) g.lineBetween(x, -half + 4, x + 14, half - 4);
+  g.lineStyle(5, 0xffffff, 0.9); g.lineBetween(12, -half + 3, 12, half - 3);
+  // workshop wall on the far side, with tool racks
+  g.fillStyle(0x56607a, 1); g.fillRoundedRect(-170, half + 8, 200, 26, 6);
+  g.fillStyle(0xffc83c, 1); g.fillRect(-160, half + 14, 180, 5);
+  for (let x = -150; x < 20; x += 34) { g.fillStyle(0xd7dde8, 1); g.fillRect(x, half + 22, 18, 7); }
+  add(g, bb, { x0: -180, y0: -half - 4, x1: 40, y1: half + 40 }, BAKE.decor);
+  // open-sided roof: outline only, so the rig stays readable under it
+  const cg = scene.add.graphics().setDepth(DEPTH.veh(0) + 0.6).setPosition(bay.x, bay.y).setRotation(bay.h);
+  cg.lineStyle(3, 0xffc83c, 0.9); cg.strokeRoundedRect(-176, -half - 12, 212, seg.laneW + 50, 8);
+  cg.lineStyle(1.5, 0xeaf2ff, 0.5); cg.strokeRoundedRect(-172, -half - 8, 204, seg.laneW + 42, 6);
+  add(cg, bb, { x0: -182, y0: -half - 18, x1: 42, y1: half + 44 }, BAKE.decor);
+}
+
 export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameObjects.Layer, baker: Baker): Cullable[] {
   const items: Cullable[] = [];
   // everything here is static, so it is handed to the baker: the Graphics itself never renders, an Image of it does.
@@ -696,8 +718,9 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
       g.fillStyle(0xffffff, 1); g.fillCircle(m.x, m.y, 2);
     }
     add(g, { x0: sv.x - 600, y0: sv.y - 600, x1: sv.x + 600, y1: sv.y + 600 }, bboxOf(pts, 12), BAKE.decor);
-    // shop and garden beside the forecourt
-    const gp = seg.path.at(seg.len / 2, W / 2 + 26 + 110);
+    if (sv.bay) drawRepairBay(scene, sv, add);
+    // shop and garden beside the forecourt (beyond the repair bay, when there is one)
+    const gp = seg.path.at(seg.len / 2, W / 2 + 26 + 110 + (sv.bay ? 96 : 0));
     const sg = scene.add.graphics().setDepth(DEPTH.road(0) - 0.3).setPosition(gp.x, gp.y).setRotation(sv.h);
     const big = seg.lanes > 2;
     const gw = big ? 360 : 260, gh = 190;
@@ -768,6 +791,12 @@ function drawIcon(g: G, x: number, y: number, icon: string) {
     g.fillStyle(0xffffff, 1); g.fillRoundedRect(x - 9, y - 12, 14, 24, 3);
     g.fillStyle(0x1f5fb8, 1); g.fillRect(x - 6, y - 9, 8, 7);
     g.lineStyle(3, 0xffffff, 1); g.lineBetween(x + 5, y - 6, x + 11, y - 2); g.lineBetween(x + 11, y - 2, x + 11, y + 8);
+  } else if (icon === 'repair') {
+    // a small pump beside a spanner: fuel and repair
+    g.fillStyle(0xffffff, 1); g.fillRoundedRect(x - 12, y - 11, 10, 22, 2);
+    g.fillStyle(0x1f5fb8, 1); g.fillRect(x - 10, y - 8, 6, 5);
+    g.lineStyle(3.5, 0xffffff, 1); g.lineBetween(x + 2, y + 10, x + 10, y - 4);
+    g.fillStyle(0xffffff, 1); g.fillCircle(x + 11, y - 6, 5); g.fillStyle(0x1f5fb8, 1); g.fillCircle(x + 13, y - 8, 2.5);
   } else if (icon === 'P') {
     g.fillStyle(0xffffff, 1); g.fillRect(x - 8, y - 12, 5, 24); g.fillCircle(x + 2, y - 4, 9); g.fillStyle(0x1f5fb8, 1); g.fillCircle(x + 1, y - 4, 4);
   } else if (icon === 'lights') {

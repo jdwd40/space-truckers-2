@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { WorldScene } from './world';
+import { WorldScene, type RepairQuote } from './world';
 import { G, SPEEDS, CLASSES, RANKS, Job, bus, rankOf, money, distTxt, save, toast, UP, UPGRADES, nextUpgrade, PAX_MAX, PAX_PAY } from './state';
 import { Station } from './network';
 import { clamp } from './geom';
@@ -32,6 +32,8 @@ export class UIScene extends Phaser.Scene {
   hintBox!: Phaser.GameObjects.Container; hintT!: Phaser.GameObjects.Text; hintG!: Phaser.GameObjects.Graphics; hintTimer = 0;
   muteBtn!: Btn;
   modal: Phaser.GameObjects.Container | null = null;
+  /** the repair bay quote on screen, if any: it is answered with its buttons, Enter (authorise) or Esc (decline) */
+  quoteOpen = false;
   navC = { x: 0, y: 0, R: 100 };
   banner = { x: 0, y: 0, w: 0, h: 0 };
   last: Record<string, string> = {};
@@ -59,6 +61,7 @@ export class UIScene extends Phaser.Scene {
     bus.on('toast', (m: string, c: string, d: number) => this.showToast(m, c, d));
     bus.on('hint', (m: string) => this.showHint(m));
     bus.on('hintHide', () => { if (this.hintTimer > 0.5) this.hintTimer = 0.5; });
+    bus.on('repairQuote', (q: RepairQuote) => this.openQuote(q));
     bus.on('board', (st: Station, jobs: Job[], summary: any) => { this.pendingBoard = { st, jobs, summary }; this.time.delayedCall(summary ? 900 : 200, () => this.openBoard()); });
     bus.on('zone', (z: ZoneDef) => { this.pendingZone = z; });
     bus.on('police', (reason: string, fine: number) => this.showToast(fine > 0 ? `🚓 Pulled over: ${reason} — fined ${money(fine)}` : `🚓 Pulled over: ${reason} — just a warning this time!`, '#ffb4b4', 5000));
@@ -68,6 +71,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   private onKey(e: KeyboardEvent) {
+    if (this.quoteOpen) {
+      if (e.key === 'Enter' || e.key === ' ') this.answerQuote(true);
+      else if (e.key === 'Escape' || e.key === 'Backspace') this.answerQuote(false);
+      return;
+    }
     if (e.key === 'Escape' || e.key.toLowerCase() === 'p') { this.togglePause(); return; }
     if (this.modal) {
       if ((e.key === 'Enter' || e.key === ' ') && G.mode === 'title') this.startGame();
@@ -639,6 +647,32 @@ export class UIScene extends Phaser.Scene {
     });
     c.add(this.txt(W / 2, y0 + ph - 22 * u, 'Bigger hauls unlock as you earn. Spend your earnings in the Rig Garage.', 13, '#8fa6d8', false, [0.5, 0.5]));
     save();
+  }
+
+  // ------------------------------------------------------------------ repair bay
+  private answerQuote(authorise: boolean) {
+    this.quoteOpen = false; this.closeModal(); sfx.click();
+    bus.emit('repairReply', authorise);
+  }
+  openQuote(q: RepairQuote) {
+    const W = this.scale.width, H = this.scale.height, u = this.u;
+    const c = this.dim();
+    this.quoteOpen = true;
+    const pw = Math.min(W - 40 * u, 520 * u), ph = 300 * u;
+    const x0 = W / 2 - pw / 2, y0 = H / 2 - ph / 2;
+    c.add(this.panel(x0, y0, pw, ph, 0.97));
+    c.add(this.txt(x0 + 28 * u, y0 + 20 * u, `${q.facility} — Repair bay`, 24));
+    c.add(this.txt(x0 + 28 * u, y0 + 54 * u, 'Quote before any work', 14, '#9fe9ff', false));
+    const g = this.add.graphics();
+    g.fillStyle(0x14503a, 1); g.fillRoundedRect(x0 + 20 * u, y0 + 90 * u, pw - 40 * u, 70 * u, 10 * u);
+    c.add(g);
+    c.add(this.txt(x0 + pw / 2, y0 + 112 * u, q.text, 22, '#b8ffd8', true, [0.5, 0.5]));
+    c.add(this.txt(x0 + pw / 2, y0 + 142 * u, `Total ${money(q.total)}`, 15, '#cfe0ff', false, [0.5, 0.5]));
+    const bw = Math.min(190 * u, (pw - 60 * u) / 2);
+    const ok = this.btn(x0 + pw / 2 - bw / 2 - 10 * u, y0 + 210 * u, bw, 52 * u, 'Authorise', 19, () => this.answerQuote(true), 0x1f8a5a, 0x7ff0c0);
+    const no = this.btn(x0 + pw / 2 + bw / 2 + 10 * u, y0 + 210 * u, bw, 52 * u, 'Decline', 19, () => this.answerQuote(false), 0x1c2a52, EDGE);
+    c.add(ok.c); c.add(no.c);
+    c.add(this.txt(W / 2, y0 + ph - 22 * u, 'Enter to authorise · Esc to decline', 13, '#8fa6d8', false, [0.5, 0.5]));
   }
 
   // ------------------------------------------------------------------ rig garage
