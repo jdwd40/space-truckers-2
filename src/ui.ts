@@ -509,9 +509,13 @@ export class UIScene extends Phaser.Scene {
       if (this.last.nav !== nk) {
         this.last.nav = nk;
         const b = this.banner;
-        this.navTitle.setText(nav.title);
-        if (this.navTitle.width > b.w - 104 * u) this.navTitle.setScale((b.w - 104 * u) / this.navTitle.width); else this.navTitle.setScale(1);
-        this.navSub.setText(nav.sub);
+        // both lines shrink to fit the banner rather than run off its right edge
+        const fit = (t: Phaser.GameObjects.Text, s: string) => {
+          t.setScale(1).setText(s);
+          if (t.width > b.w - 104 * u) t.setScale((b.w - 104 * u) / t.width);
+        };
+        fit(this.navTitle, nav.title);
+        fit(this.navSub, nav.sub);
         this.navDist.setText(nav.dist > 0 ? distTxt(nav.dist) : '');
         const g = this.navG; g.clear();
         this.drawNavArrow(g, b.x + 44 * u, b.y + 44 * u, 62 * u, nav.arrow);
