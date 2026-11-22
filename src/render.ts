@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, LW, TAPER, Sign, SignPanel, Station, Services } from './network';
+import { Network, Seg, LW, TAPER, Sign, SignPanel, Station, Services, PoliceHQ } from './network';
 import { Pt, rand, clamp as clampV } from './geom';
 import type { Outposts } from './outposts';
 import type { Baker, Box } from './bake';
@@ -663,6 +663,25 @@ function drawRepairBay(scene: Phaser.Scene, sv: Services, add: (obj: Phaser.Game
   add(cg, bb, { x0: -182, y0: -half - 18, x1: 42, y1: half + 44 }, BAKE.decor);
 }
 
+/** Police HQ: the station house inside its turning loop */
+function drawPoliceHQ(scene: Phaser.Scene, hq: PoliceHQ, add: (obj: Phaser.GameObjects.Graphics, bb: Box, box: Box, scale: number) => void) {
+  // the building sits inside the loop, between its way in and its way out
+  const yard = hq.yard, a = yard.path.at(0), b = yard.path.at(yard.len);
+  const cx = (a.x + b.x) / 2 - 320, cy = (a.y + b.y) / 2;
+  const g = scene.add.graphics().setDepth(DEPTH.road(0) - 0.3).setPosition(cx, cy);
+  const W = 240, H = 44;
+  g.fillStyle(0x56607a, 1); g.fillRoundedRect(-W / 2 - 10, -H / 2 - 8, W + 20, H + 16, 12);
+  g.fillStyle(0x0b0f18, 0.3); g.fillRoundedRect(-W / 2 + 4, -H / 2 + 6, W, H, 8);
+  g.fillStyle(0x283a8f, 1); g.fillRoundedRect(-W / 2, -H / 2, W, H, 8);
+  // chequered band and roof lights
+  for (let i = 0; i < 12; i++) { g.fillStyle(i % 2 ? 0xffffff : 0x1a2766, 1); g.fillRect(-W / 2 + i * (W / 12), 4, W / 12, 7); }
+  g.fillStyle(0x5ad8ff, 1); g.fillCircle(-W / 2 + 22, -H / 2 + 12, 5);
+  g.fillStyle(0xff4b3e, 1); g.fillCircle(W / 2 - 22, -H / 2 + 12, 5);
+  // the badge
+  g.fillStyle(0xffffff, 1); g.fillCircle(0, -H / 2 + 14, 11); g.fillStyle(0x283a8f, 1); g.fillCircle(0, -H / 2 + 14, 8); g.fillStyle(0xffd23c, 1); g.fillCircle(0, -H / 2 + 14, 4);
+  add(g, { x0: cx - 500, y0: cy - 500, x1: cx + 500, y1: cy + 500 }, { x0: -W / 2 - 14, y0: -H / 2 - 12, x1: W / 2 + 14, y1: H / 2 + 14 }, BAKE.decor);
+}
+
 export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameObjects.Layer, baker: Baker): Cullable[] {
   const items: Cullable[] = [];
   // everything here is static, so it is handed to the baker: the Graphics itself never renders, an Image of it does.
@@ -741,6 +760,7 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
     cg.lineStyle(1.5, 0xeaf2ff, 0.5); cg.strokeRoundedRect(-40, -W / 2 - 10, 80, W + 20, 6);
     add(cg, { x0: cp.x - 200, y0: cp.y - 200, x1: cp.x + 200, y1: cp.y + 200 }, { x0: -50, y0: -W / 2 - 20, x1: 50, y1: W / 2 + 20 }, BAKE.decor);
   }
+  for (const hq of net.policeHQs) drawPoliceHQ(scene, hq, add);
   // lay-by gardens
   for (const lb of net.laybys) {
     const g = scene.add.graphics().setDepth(DEPTH.road(0) - 0.2);

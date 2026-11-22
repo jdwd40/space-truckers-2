@@ -99,6 +99,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   fuelTarget: Services | null = null;
   /** the Fuel & Repair facility whose repair bay the driver chose at its fork */
   repairTarget: Services | null = null;
+  /** the way out of Police HQ's turning loop the driver picked, overriding the route's */
+  hqOut: Trans | null = null;
   /** the repair quote on screen while the rig stands in a repair bay */
   quote: RepairQuote | null = null;
   /** the rig has been quoted in the bay it is in, and may drive out */
@@ -606,6 +608,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const p = this.player, seg = p.seg, n = seg.lanes;
     const fork = seg.endT?.to.svc;
     if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
+    if (seg.hq && seg === seg.hq.yard && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
     if (seg.kind !== 'motorway') { toast('Stay on the slip road for now', '#ffd27a', 1600); return; }
     const base = p.pend ?? p.lane;
     const tgt = base + d;
@@ -619,7 +622,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const side = tgt < 0 ? -1 : 1;
       const z = seg.auxAt(p.s + 40, side) || seg.auxAt(p.s, side);
       if (z && (z.type === 'exit' || z.type === 'layby') && p.s < z.s1 - 40) { this.traffic.ask(p, tgt, true); sfx.whoosh(); return; }
-      const soon = seg.aux.find((a) => a.side === side && (a.type === 'exit' || a.type === 'layby') && a.s0 > p.s && a.s0 - p.s < 1100);
+      // the nearest exit or lay-by coming up on that side (a carriageway can have two close together, as on Kestrel Link)
+      const soon = seg.aux.filter((a) => a.side === side && (a.type === 'exit' || a.type === 'layby') && a.s0 > p.s && a.s0 - p.s < 1100)
+        .sort((a, b) => a.s0 - b.s0)[0];
       if (soon) { this.armed = soon; toast('Exit lane coming up — your rig will move over when it opens', '#9fe9ff', 2200); sfx.click(); }
       else toast(side > 0 ? 'No lane to the right here' : 'No lane to the left here', '#ffd27a', 1400);
     }
@@ -653,17 +658,33 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     return calculateServiceBrake(v.v, v);
   }
   onTrans(v: Veh, t: Trans) {
+    // an exit off the last stretch before a gate (Police HQ, off Kestrel Link southbound) leaves the dock behind
+    if (t.type === 'exit' && this.pstate === 'docking' && this.dockS.has(t.from)) this.pstate = 'drive';
     if (t.type === 'exit') {
       this.favours.onExit(t);
       if (t.svc?.bay) toast(`Pulling into ${t.svc.name} — press D for the repair bay, A for the pumps`, '#9fe9ff', 3200);
       else if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
+      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for Polar Express or D for Kestrel Station at the loop`, '#9fe9ff', 3200);
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
     } else if (t.type === 'merge') {
       hint('merge', 'Merging: your rig slides into traffic by itself when there is a gap — just keep your speed.');
     }
     if (t.from.bay) { this.bayDone = false; this.repairTarget = null; }
+    if (t.from === this.hqOut?.from) this.hqOut = null;
     if (v.route[0] !== t) this.computeRoute(false);
+  }
+  /** in Police HQ's turning loop: leave by the way out on the left (d < 0) or the right */
+  chooseHQExit(d: number) {
+    const yard = this.player.seg, end = yard.path.at(yard.len);
+    const side = (t: Trans) => { const q = t.to.path.at(Math.min(200, t.to.len)); return -Math.sin(end.h) * (q.x - end.x) + Math.cos(end.h) * (q.y - end.y); };
+    const ways = yard.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
+    const pick = d < 0 ? ways[0] : ways[ways.length - 1];
+    if (!pick || pick === this.hqOut) return;
+    this.hqOut = pick;
+    toast(`Leaving towards ${pick.label}`, '#9fe9ff', 1800);
+    sfx.click();
+    this.computeRoute(false);
   }
   /** at a Fuel & Repair fork: head for the repair bay, or back to the pumps */
   chooseBay(sv: Services, bay: boolean) {
@@ -772,6 +793,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!G.job) this.routeChoice = null;
     // a fuel or repair detour goes straight there; the waypoint waits until it is done
     const wp = this.fuelTarget || this.repairTarget?.bay ? null : this.waypoint;
+    // a way out of Police HQ the driver picked leads the route, which carries on to the goal from there
+    const out = this.hqOut?.from === p.seg ? this.hqOut : null;
+    if (out) {
+      const on = goals.length ? this.net.route(out.to, out.toS, goals, 0, true) : null;
+      p.route = [out, ...(on?.trans ?? [])]; p.goal = on?.goal ?? null; this.routeDiverted = false; this.drawRoute(); return;
+    }
     if (!goals.length && !wp) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
     // an unreachable waypoint (say, behind a closure) is kept, and the route goes straight to the goal until it is reachable
