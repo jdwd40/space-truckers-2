@@ -1,0 +1,254 @@
+[
+ {
+  "from": "Terra Nova",
+  "to": "Kestrel Station",
+  "legal": 107.8,
+  "deadline": 179.7
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Jove Gasport",
+  "legal": 106.8,
+  "deadline": 178.5
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Vesta Colony",
+  "legal": 96.7,
+  "deadline": 165.9
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Harbor Prime",
+  "legal": 47.9,
+  "deadline": 104.9
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Glacier Outpost",
+  "legal": 158,
+  "deadline": 242.5
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Ember Refinery",
+  "legal": 41.1,
+  "deadline": 96.4
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Terra Nova",
+  "legal": 107.9,
+  "deadline": 179.9
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Jove Gasport",
+  "legal": 93.9,
+  "deadline": 162.4
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Vesta Colony",
+  "legal": 107.7,
+  "deadline": 179.6
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Harbor Prime",
+  "legal": 48.1,
+  "deadline": 105.2
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Glacier Outpost",
+  "legal": 42.6,
+  "deadline": 98.3
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Ember Refinery",
+  "legal": 160.8,
+  "deadline": 246
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Terra Nova",
+  "legal": 106.9,
+  "deadline": 178.6
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Kestrel Station",
+  "legal": 94,
+  "deadline": 162.5
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Vesta Colony",
+  "legal": 74.6,
+  "deadline": 138.2
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Harbor Prime",
+  "legal": 153.9,
+  "deadline": 237.4
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Glacier Outpost",
+  "legal": 39.5,
+  "deadline": 94.3
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Ember Refinery",
+  "legal": 130.3,
+  "deadline": 207.9
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Terra Nova",
+  "legal": 97,
+  "deadline": 166.3
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Kestrel Station",
+  "legal": 107.4,
+  "deadline": 179.3
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Jove Gasport",
+  "legal": 75.6,
+  "deadline": 139.4
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Harbor Prime",
+  "legal": 156.7,
+  "deadline": 240.9
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Glacier Outpost",
+  "legal": 126.8,
+  "deadline": 203.5
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Ember Refinery",
+  "legal": 44,
+  "deadline": 100
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Terra Nova",
+  "legal": 48,
+  "deadline": 105
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Kestrel Station",
+  "legal": 48.1,
+  "deadline": 105.1
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Jove Gasport",
+  "legal": 153.7,
+  "deadline": 237.2
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Vesta Colony",
+  "legal": 156.5,
+  "deadline": 240.6
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Glacier Outpost",
+  "legal": 102.5,
+  "deadline": 173.1
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Ember Refinery",
+  "legal": 100.9,
+  "deadline": 171.1
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Terra Nova",
+  "legal": 158.2,
+  "deadline": 242.7
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Kestrel Station",
+  "legal": 42.8,
+  "deadline": 98.5
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Jove Gasport",
+  "legal": 39.5,
+  "deadline": 94.4
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Vesta Colony",
+  "legal": 125.8,
+  "deadline": 202.3
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Harbor Prime",
+  "legal": 102.7,
+  "deadline": 173.4
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Ember Refinery",
+  "legal": 181.6,
+  "deadline": 272
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Terra Nova",
+  "legal": 41.3,
+  "deadline": 96.6
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Kestrel Station",
+  "legal": 160.8,
+  "deadline": 246
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Jove Gasport",
+  "legal": 131.2,
+  "deadline": 208.9
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Vesta Colony",
+  "legal": 43.8,
+  "deadline": 99.8
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Harbor Prime",
+  "legal": 101,
+  "deadline": 171.2
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Glacier Outpost",
+  "legal": 182.4,
+  "deadline": 273
+ }
+]

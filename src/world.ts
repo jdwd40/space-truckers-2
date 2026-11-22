@@ -21,12 +21,19 @@ import type { SectorMapScene } from './sectormap';
 
 export const STATION_R = 1250;
 /**
- * A contract deadline is the time a loaded rig takes to drive its fastest route at the posted limit, times this slack.
- * That driven time is the route's legal time plus START_STOP_TIME for each leg: pulling away from the gate and slowing
- * into the dock. On the Harbor Prime–Glacier Outpost corridor this makes the deadline 1.15 times a legal Polar Express
- * run, which a legal run via Kestrel Station misses (ADR 0001).
+ * How a contract deadline follows from the legal travel time of its fastest route (seconds at the posted limit):
+ * (legal time + `startStop` per leg) × `slack` + `grace`.
  */
-export const DEADLINE_SLACK = 1.15, START_STOP_TIME = 7;
+export interface DeadlineRule { slack: number; startStop: number; grace: number }
+/** Most contracts: a generous margin over the legal time, as when routing first went by time (#21). */
+export const DEADLINE: DeadlineRule = { slack: 1.25, startStop: 0, grace: 45 };
+/**
+ * A direct contract between the two stations of a corridor (`Network.corridors`): 1.15 times the time a loaded rig takes
+ * to drive the fast road at the posted limit, which is its legal time plus START_STOP_TIME for pulling away from the gate
+ * and slowing into the dock. A legal run on the fast road beats it; a legal run on the slower route misses it (ADR 0001).
+ */
+export const START_STOP_TIME = 7;
+export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: 0 };
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -896,11 +903,13 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
       const trip = this.trips[from.id + '>' + to.id], leg = remote ? this.trips[st.id + '>' + from.id] : { time: 0, distance: 0 };
-      const dist = trip.distance + leg.distance, legal = trip.time + leg.time + START_STOP_TIME * (remote ? 2 : 1);
+      const dist = trip.distance + leg.distance;
+      const rule = !remote && this.net.corridor(from.id, to.id) ? CORRIDOR_DEADLINE : DEADLINE;
+      const target = (trip.time + leg.time + rule.startStop * (remote ? 2 : 1)) * rule.slack + rule.grace;
       const pay = Math.round(((80 + (dist / 1000) * 15) * CLASSES[cls].mult * (remote ? 1.2 : 1)) / 5) * 5;
       jobs.push({
         id: `${from.id}-${to.id}`, cargo: pick(CARGO[from.id]), from: from.id, to: to.id, cls, pay, dist,
-        stage: from === st ? 'deliver' : 'pickup', target: legal * DEADLINE_SLACK, elapsed: 0,
+        stage: from === st ? 'deliver' : 'pickup', target, elapsed: 0,
         locked: CLASSES[cls].rank > rank, remote,
       });
     }
@@ -1232,7 +1241,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         this.laybySlot = z.slots!.find((sl) => !sl.occ && sl.s > p.s + 40) ?? null;
         if (this.laybySlot) this.laybySlot.occ = p;
         toast('Pulling into the lay-by', '#9fe9ff', 1800);
-      } else if (this.pstate === 'drive' && !(z && z.type === 'exit') && p.pend === null) {
+        // a slip road can join the last stretch before a gate (Kestrel Link), so a rig already slowing to dock still merges
+      } else if ((this.pstate === 'drive' || this.pstate === 'docking') && !(z && z.type === 'exit') && p.pend === null) {
         this.traffic.ask(p, side > 0 ? seg.lanes - 1 : 0, true);
         if (Math.random() < 0.02) hint('auto-merge', 'Your rig merges back into traffic automatically when a gap opens.');
       }

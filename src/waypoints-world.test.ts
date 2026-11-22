@@ -146,6 +146,21 @@ describe('waypoints in the world', () => {
     expect(routeMiss(scene, scene.waypoint!)).toBeLessThan(150);
   });
 
+  it('leaves Kestrel by the link gate on the way to Harbor Prime when the waypoint is on Kestrel Link (#24)', () => {
+    const { scene, net, p, onRoad } = worldOnHarborRun({ from: 'glacier', to: 'harbor', stage: 'deliver', cls: 0 });
+    // from Glacier Outpost neither compared route uses the link: it shares Frost Line with one and Polar Express with the other
+    scene.depart(net.byId.glacier, 'harbor');
+    expect(scene.routeComparison()!.options.every((o) => !o.roads.includes('Kestrel Link'))).toBe(true);
+    scene.depart(net.byId.kestrel, 'harbor', true);
+    expect(p.seg.road).toBe('Harbor Run');
+    const a = onRoad('Kestrel Link', 0.6);
+    expect(scene.setWaypoint(a.x, a.y)).toBe(true);
+    scene.depart(net.byId.kestrel, 'harbor', true);
+    expect(p.seg.road).toBe('Kestrel Link');
+    expect(roadsOn(scene)).toContain('Polar Express');
+    expect(scene.player.goal!.seg.arrStation).toBe(net.byId.harbor);
+  });
+
   it('replaces a route picked from the comparison, and is replaced by one', () => {
     const { scene, onRoad } = worldOnHarborRun();
     scene.pickRoute(0);

@@ -11,7 +11,7 @@ vi.mock('phaser', () => ({
 import { WorldScene } from './world';
 import { Network } from './network';
 import { G } from './state';
-import baseline from './fixtures/fastest-routes-baseline.json';
+import before from './fixtures/deadlines-before-corridor.json';
 
 function board() {
   const scene = new WorldScene(), net = new Network();
@@ -42,16 +42,29 @@ describe('contract pay and deadlines', () => {
     expect(job.pay).toBe(755);
   });
 
-  it('keeps every station pair on a deadline that a legal run beats, never looser than the old one', () => {
+  it('sets the Harbor Prime–Glacier Outpost deadline, both ways, at 1.15 times a legal Polar Express run', () => {
     const { contract, legal } = board();
-    const rows = baseline.map((row) => ({ ...row, job: contract(row.from, row.to), time: legal(row.from, row.to) }));
-    const lines = ['| From | To | Legal time | Old deadline | New deadline |', '|---|---|---|---|---|'];
-    for (const { from, to, job, time, deadline } of rows) {
-      // pulling away and docking take a loaded rig about 7 s beyond the legal time (measured in corridor-drive.test.ts)
-      expect(job.target, `${from} → ${to}`).toBeGreaterThan((time + 7) * 1.1);
-      expect(job.target / deadline, `${from} → ${to}`).toBeGreaterThan(0.5);
-      expect(job.target / deadline, `${from} → ${to}`).toBeLessThan(1.05);
-      lines.push(`| ${from} | ${to} | ${time.toFixed(0)} s | ${deadline} s | ${job.target.toFixed(0)} s |`);
+    for (const [from, to] of [['Harbor Prime', 'Glacier Outpost'], ['Glacier Outpost', 'Harbor Prime']]) {
+      // pulling away and docking take a loaded rig about 7 s beyond the legal time (measured in corridor-drive.test.ts:
+      // a 114.1 s run on a 107.0 s route), so the deadline is about 131 s
+      expect(contract(from, to).target, `${from} → ${to}`).toBeCloseTo(1.15 * (legal(from, to) + 7), 1);
+    }
+    expect(contract('Harbor Prime', 'Glacier Outpost').target).toBeCloseTo(131.3, 0);
+  });
+
+  it('keeps every other station pair on a deadline a legal run beats, no tighter than when routing first went by time', () => {
+    const { contract, legal } = board();
+    const corridor = (a: string, b: string) => [a, b].sort().join() === 'Glacier Outpost,Harbor Prime';
+    const lines = ['| From | To | Legal time | Deadline (#21) | Deadline |', '|---|---|---|---|---|'];
+    // `before` was recorded from the time-costed router of #21 (6537e74), whose deadline was 1.25 × legal time + 45 s
+    expect(before).toHaveLength(42);
+    for (const row of before) {
+      const { from, to } = row, job = contract(from, to), time = legal(from, to);
+      lines.push(`| ${from} | ${to} | ${time.toFixed(0)} s | ${row.deadline.toFixed(0)} s | ${job.target.toFixed(0)} s |`);
+      if (corridor(from, to)) continue;
+      expect(job.target, `${from} → ${to}`).toBeGreaterThan((time + 7) * 1.2);
+      expect(job.target, `${from} → ${to}`).toBeGreaterThanOrEqual(row.deadline - 0.5);
+      expect(job.target / row.deadline, `${from} → ${to}`).toBeLessThan(1.3);
     }
     console.log(lines.join('\n'));
   });

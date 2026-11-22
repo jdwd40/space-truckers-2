@@ -72,6 +72,8 @@ export function closedLanesText(closed: number[], lanes: number): string {
 }
 /** how close to a fuel stop's or a lay-by's middle an inspected point counts as on it */
 const FACILITY_REACH = 260, LAYBY_REACH = 150;
+/** A pair of stations joined by more than one genuinely different route; `fast` is the road of the faster legal route (ADR 0001). */
+export interface Corridor { stations: [string, string]; fast: string }
 /** an axis-aligned world rectangle */
 /**
  * One route offered in a route comparison. `start` is where it begins (which departure, for a rig at a station gate);
@@ -139,6 +141,8 @@ export class Seg {
   /** closed lanes; `warn` is how far before s0 a signed closure already counts as closed, for merging and spawning */
   blocks: { lane: number; s0: number; s1: number; inc: unknown; warn?: number }[] = [];
   localOK = false;
+  /** a motorway within this distance of a station centre is posted at 3 */
+  stationZone = 3300;
   density = 1;
   trucky = false;
   /** lanes dropped on the outer side at the end of this section / gained at its start */
@@ -192,6 +196,7 @@ export class Network {
   crossings: Crossing[] = [];
   cameras: Camera[] = [];
   roads: Road[] = [];
+  corridors: Corridor[] = [];
   spawnSegs: { seg: Seg; rate: number; mitesOnly: boolean }[] = [];
   byId: Record<string, Station> = {};
 
@@ -473,6 +478,73 @@ export class Network {
     this.signs.push({ seg, s: tr.fromS + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: tr.label, arrow: 45 }] });
   }
 
+  /** A level-0 slip road along a bezier whose ends leave and arrive along the carriageways they join (`c0`, `c3`: handle lengths). */
+  private slip(name: string, p0: Pose, c0: number, p3: Pose, c3: number, limit: number): Seg {
+    const d0 = dirv(p0.h), d3 = dirv(p3.h);
+    const pts = bezier(p0, { x: p0.x + d0.x * c0, y: p0.y + d0.y * c0 }, { x: p3.x - d3.x * c3, y: p3.y - d3.y * c3 }, p3, 140);
+    return this.seg(name, new Path(pts), 1, 'ramp', 0, limit);
+  }
+
+  /**
+   * Kestrel Link: a 2-lane link road from a gate at Kestrel Station north to a grade-separated junction near the middle of
+   * Polar Express, with all four turns. The right turns are level slip roads on the outer sides: the link's northbound
+   * carriageway drops its outer lane and carries on as the slip to Polar Express east, and the slip from Polar Express east
+   * becomes the link's southbound carriageway. The left turns leave and join on the inner sides and fly over Polar
+   * Express, as at the central interchange.
+   */
+  private kestrelLink(kestrel: Station, polar: Road, harbor: Station, glacier: Station) {
+    const link = this.road('Kestrel Link', [{ x: 900, y: -17000 }, { x: 900, y: -17950 }, { x: 900, y: -18900 }], 2, 2);
+    const north = link.f[0], south = link.r[0];
+    for (const seg of [north, south]) { seg.limit = 4; seg.stationZone = 1800; seg.localOK = true; }
+    north.depStation = kestrel; kestrel.dep.push(north);
+    south.arrStation = kestrel; kestrel.arr.push(south);
+    this.spawnSegs.push({ seg: north, rate: 2.4, mitesOnly: false });
+    const east = polar.f[0], west = polar.r[0];
+    const sE = east.path.nearest(900, -19400).s, sW = west.path.nearest(900, -19400).s;
+
+    // right turn north → Polar Express east: the outer lane drops and lane 0 carries on into the slip road
+    const mE = sE + 1300;
+    const toEast = this.slip(`Kestrel Link ramp ${glacier.name}`, north.path.at(north.len, north.laneLat(0)), 250, this.auxPt(east, mE, 1), 900, 3);
+    north.drop = north.lanes - toEast.lanes; north.next = toEast; toEast.prev = north;
+    north.endT = this.addT({ type: 'end', from: north, fromS: north.len, to: toEast, toS: 0, side: 1, latShift: ((north.lanes - toEast.lanes) * LW) / 2, label: glacier.name, kind: 'link', dir: 'S' });
+    const amE: Aux = { side: 1, s0: mE, s1: mE + 560, type: 'merge' };
+    east.aux.push(amE);
+    toEast.endT = amE.trans = this.addT({ type: 'merge', from: toEast, fromS: toEast.len, to: east, toS: mE, side: 1, latShift: 0, label: polar.name, kind: 'link', dir: 'S', aux: amE });
+
+    // right turn Polar Express east → south: the slip road becomes the link's southbound carriageway, gaining its outer lane
+    const xE = sE - 1400;
+    const fromEast = this.slip(`Polar Express ramp ${kestrel.name}`, this.auxPt(east, xE, 1), 900, south.path.at(0, south.laneLat(0)), 250, 3);
+    const axE: Aux = { side: 1, s0: xE - 900, s1: xE, type: 'exit' };
+    east.aux.push(axE);
+    axE.trans = this.addT({ type: 'exit', from: east, fromS: xE, to: fromEast, toS: 0, side: 1, latShift: 0, label: kestrel.name, kind: 'jct', dir: 'R', aux: axE });
+    south.gain = south.lanes - fromEast.lanes; fromEast.next = south; south.prev = fromEast;
+    fromEast.endT = this.addT({ type: 'end', from: fromEast, fromS: fromEast.len, to: south, toS: 0, side: 1, latShift: ((fromEast.lanes - south.lanes) * LW) / 2, label: link.name, kind: 'link', dir: 'S' });
+
+    // left turns, on the inner sides, over Polar Express
+    const xN = north.len - TAPER - 60;
+    this.ramp(north, xN, -1, west, sW + 1300, -1, 0.55, { level: 2, limit: 3, label: harbor.name, kind: 'jct', dir: 'L', decel: 500 });
+    this.ramp(west, sW - 1300, -1, south, TAPER + 100, -1, 0.55, { level: 3, limit: 3, label: kestrel.name, kind: 'jct', dir: 'L' });
+
+    // signs, as at other junctions: two gantries ahead of each exit from Polar Express, and a side sign at it
+    const exitTo = (seg: Seg) => seg.outs.find((t) => t.type === 'exit' && t.to.name.includes('ramp') && t.label === kestrel.name)!;
+    for (const [seg, through] of [[east, glacier], [west, harbor]] as const) {
+      const t = exitTo(seg), side = t.side, panel = side > 0 ? 'R' : 'L', arrow = side * 45;
+      for (const back of [2200, 1250]) this.signs.push({ ...this.place(seg, t.fromS - back), kind: 'gantry', side: 1, panels: [
+        { side: 'C', color: GREEN, title: through.name, sub: `${polar.name} · Straight on`, arrow: 0 },
+        { side: panel, color: GREEN, title: kestrel.name, sub: `${link.name} · Exit ${side > 0 ? 'right' : 'left'}  ${dist(back)}`, arrow },
+      ] });
+      this.signs.push({ seg, s: t.fromS + 50, kind: 'side', side, panels: [{ side: panel, color: GREEN, title: kestrel.name, sub: link.name, arrow }] });
+    }
+    // on the link: the route confirmation at the gate, a gantry before the split and a side sign at the left turn
+    const toWest = north.outs.find((t) => t.type === 'exit')!;
+    for (const s of [380, toWest.fromS - 700]) this.signs.push({ seg: north, s, kind: 'gantry', side: 1, panels: [
+      { side: 'L', color: GREEN, title: harbor.name, sub: `${polar.name} west · Exit left  ${dist(toWest.fromS - s)}`, arrow: -45 },
+      { side: 'R', color: GREEN, title: glacier.name, sub: `${polar.name} east · Keep right`, arrow: 45 },
+    ] });
+    this.signs.push({ seg: north, s: toWest.fromS + 50, kind: 'side', side: -1, panels: [{ side: 'L', color: GREEN, title: harbor.name, arrow: -45 }] });
+    this.signs.push({ seg: toEast, s: 120, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: glacier.name, arrow: 45 }] });
+  }
+
   private build() {
     const terra = this.station('terra', 'Terra Nova', 'Garden planet', -16000, 1500, 0x4ad991);
     const kestrel = this.station('kestrel', 'Kestrel Station', 'Starbase', 900, -16000, 0x7fc2ff);
@@ -633,6 +705,8 @@ export class Network {
     const pq = (segs: Seg[], x: number) => Math.round((segs.reduce((a, sg) => a + sg.len, 0) * x) / 100) * 100;
     lay(polar.f, pq(polar.f, 0.2)); cam(polar.f, pq(polar.f, 0.3)); lay(polar.f, pq(polar.f, 0.7)); cam(polar.f, pq(polar.f, 0.8));
     lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
+    this.kestrelLink(kestrel, polar, harbor, glacier);
+    this.corridors.push({ stations: [harbor.id, glacier.id], fast: polar.name });
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
     // Opposing directions use separate decks where the inner slips cross the other carriageway.
@@ -676,7 +750,8 @@ export class Network {
     // welcome / route confirmation gantries at departures
     for (const st of this.stations) for (const seg of st.dep) {
       let last = seg, total = seg.len; while (last.next) { last = last.next; total += last.len; }
-      const dest = last.arrStation!;
+      const dest = last.arrStation;
+      if (!dest) continue; // a link road ends at a junction and carries its own signs
       this.signs.push({ seg, s: 380, kind: 'gantry', side: 1, panels: [{ side: 'C', color: GREEN, title: seg.road === 'M1' || seg.road === 'M2' ? seg.name : dest.name, sub: seg.road === 'M1' || seg.road === 'M2' ? `${dest.name}  ${dist(total)}` : `${seg.road}  ${dist(total)}`, arrow: 0 }] });
     }
 
@@ -699,7 +774,7 @@ export class Network {
           const p = seg.path.at(i * 100);
           if (Math.hypot(p.x, p.y) < 4300) lim = Math.min(lim, 4);
           for (const c of this.crossings) if (Math.hypot(p.x - c.x, p.y - c.y) < 2300) lim = 3;
-          for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < 3300) lim = 3;
+          for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < seg.stationZone) lim = 3;
         }
         seg.limits[i] = lim;
       }
@@ -846,6 +921,11 @@ export class Network {
       kind: 'road', seg, ...this.describeCarriageway(seg), limit: seg.limitAt(s),
       cameras: this.cameras.filter((c) => chain.includes(c.seg)), x: at.x, y: at.y,
     };
+  }
+
+  /** the corridor joining two stations (by ID), in either direction */
+  corridor(a: string, b: string): Corridor | undefined {
+    return this.corridors.find(({ stations: [x, y] }) => (x === a && y === b) || (x === b && y === a));
   }
 
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
