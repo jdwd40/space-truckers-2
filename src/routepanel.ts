@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import type { SectorMapScene } from './sectormap';
+import type { RouteComparison } from './world';
+import { FONT, strokeRoute } from './render';
+import { FACILITY_NAME } from './network';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 /** the route the sat-nav follows is cyan, as on the rest of the map; the other compared route is amber */
 const FOLLOWED = 0x3ff0ff, OTHER = 0xffa64d;
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
@@ -16,7 +18,7 @@ export const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t
 export class RoutePanel {
   private box: Phaser.GameObjects.Container | null = null;
   /** the comparison shown, worked out when the card is built (not on every pan or zoom) */
-  private cmp: ReturnType<SectorMapScene['world']['routeComparison']> = null;
+  private cmp: RouteComparison | null = null;
 
   constructor(private map: SectorMapScene) {
     map.layouts.push(() => this.build());
@@ -24,16 +26,22 @@ export class RoutePanel {
     map.overlays.unshift((g, _v, px) => {
       const cmp = this.cmp;
       if (!cmp) return;
-      // with a waypoint set the sat-nav follows neither compared route, so both are drawn as alternatives
-      const active = map.world.waypoint ? -1 : Math.max(0, cmp.picked);
+      const followed = this.followed();
       cmp.options.forEach((o, i) => {
-        if (i === active) return;
+        if (i === followed) return;
         const pts = map.world.net.routePoints(o.route, o.start.seg, o.start.s, Math.max(80, px * 6));
         if (pts.length < 2) return;
-        g.lineStyle(Math.max(80, px * 5), 0x0c1534, 0.9); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-        g.lineStyle(Math.max(45, px * 2.5), OTHER, 0.9); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
+        strokeRoute(g, pts, Math.max(80, px * 5), Math.max(45, px * 2.5), OTHER, 0.9);
       });
     });
+  }
+
+  /**
+   * The compared route the sat-nav follows: the picked one, or the fastest when none is picked. With a waypoint set it
+   * follows neither (-1), so both are drawn as alternatives.
+   */
+  private followed(): number {
+    return !this.cmp || this.map.world.waypoint ? -1 : Math.max(0, this.cmp.picked);
   }
 
   /** rebuild the card for the current contract and screen size */
@@ -62,7 +70,7 @@ export class RoutePanel {
     const st = map.world.jobStation()!;
     c.add(txt(14 * u, 10 * u, `ROUTES TO ${st.name.toUpperCase()}`, 14, '#ffffff'));
     c.add(txt(w - 14 * u, 12 * u, `deadline ${clock(cmp.deadline)}`, 13, '#ffd23c').setOrigin(1, 0));
-    const followed = map.world.waypoint ? -1 : Math.max(0, cmp.picked);
+    const followed = this.followed();
     cmp.options.forEach((o, i) => {
       const ry = headH + i * (rowH + 6 * u), picked = cmp.picked === i, col = i === followed ? FOLLOWED : OTHER;
       const rg = map.add.graphics();
@@ -75,7 +83,7 @@ export class RoutePanel {
       c.add(txt(w - 18 * u, ry + 8 * u, `ETA ${clock(o.eta)} ${late ? 'late' : 'on time'}`, 14, late ? '#ff8a8a' : '#7ff0c0').setOrigin(1, 0));
       const cams = `${o.cameras.length} camera${o.cameras.length === 1 ? '' : 's'}`;
       const fac = o.facilities.length
-        ? o.facilities.map((f) => f.name + (f.kind === 'fuel-repair' ? ' (Fuel & Repair)' : ' (fuel)')).join(', ')
+        ? o.facilities.map((f) => f.name + (f.kind === 'fuel-repair' ? ` (${FACILITY_NAME[f.kind]})` : ' (fuel)')).join(', ')
         : 'no fuel or repair';
       const sub = txt(32 * u, ry + 30 * u, `${o.roads.join(' › ')} · ${cams}\n${fac}`, 11.5, '#a9bce6', false);
       sub.setWordWrapWidth(w - 50 * u).setLineSpacing(1 * u);

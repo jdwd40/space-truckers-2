@@ -90,9 +90,9 @@ Play these in order: it is one walk-through of the milestone. Numbers are at the
 
 #### The corridor: comparing routes (#29, #22)
 
-- At Harbor Prime, accept a contract to Glacier Outpost and open the sector map before pulling away. A "Routes to Glacier Outpost" card (bottom left; along the bottom on a narrow portrait screen) must show the deadline (about 2:11) and two routes:
+- At Harbor Prime, accept a contract to Glacier Outpost and open the sector map before pulling away. A "Routes to Glacier Outpost" card (bottom left; along the bottom on a narrow portrait screen) must show the deadline (about 2:51) and two routes:
   - Fastest · Polar Express: ETA about 1:54 on time, 2 cameras, no fuel or repair.
-  - Alternative · Via Kestrel Station: ETA about 2:15 late, Harbor Run › Frost Line, 1 camera, Harbor Pumps and Frost Fuel (both Fuel & Repair).
+  - Alternative · Via Kestrel Station: ETA about 2:15 on time, Harbor Run › Frost Line, 1 camera, Harbor Pumps and Frost Fuel (both Fuel & Repair).
 
   The followed route is cyan on the map and the other amber. The ETAs count from the contract clock, so reopening the card later in the run shows the same deadline and later ETAs.
 - With a contract, the inspection card (bottom right) and the route comparison card (bottom left) must not overlap at any window width; on a narrow screen the inspection card sits at the top. Tapping the comparison card must not pan the map or inspect what is under it.
@@ -100,7 +100,7 @@ Play these in order: it is one walk-through of the milestone. Numbers are at the
 
 #### The corridor: Polar Express (#22)
 
-- Close the map and drive the fastest route. The sat-nav must send you along Polar Express. Drive it at the posted limit: pass two "Speed check" signs and cameras and two lay-bys, with no fuel stop, and on a clear run deliver early (about 114 s against the 131 s deadline) on about 40% of a tank.
+- Close the map and drive the fastest route. The sat-nav must send you along Polar Express. Drive it at the posted limit: pass two "Speed check" signs and cameras and two lay-bys, with no fuel stop, and on a clear run deliver early (about 114 s against the 171 s deadline) on about 40% of a tank. Incidents and roadworks ahead should usually still leave it early: the deadline allows them 40 s.
 
 #### Waypoints (#28)
 
@@ -122,7 +122,7 @@ Play these in order: it is one walk-through of the milestone. Numbers are at the
 - Authorise it (button or Enter): control returns, the rig pulls out and merges back onto Harbor Run eastbound beyond the facility, finding a gap in traffic by itself.
 - At Kestrel Station the rig must wait for dock clearance (about 20 s), then leave along Frost Line by itself without opening the job board.
 - Frost Line must have no cameras and no "Speed check" signs. At Frost Fuel (towards Glacier Outpost) use the repair bay again, this time with Decline (button or Esc), and check the quote at desktop and narrow portrait sizes. The rig must rejoin Frost Line towards Glacier Outpost.
-- Driven at the posted limit without the repair stops, the Kestrel route arrives just after the deadline (about 135 s) and earns no early bonus. After delivery the choice is gone: the next contract uses the fastest route.
+- Driven at the posted limit without the repair stops, the Kestrel route takes about 135 s: slower than Polar Express, but on a clear road still inside the 171 s deadline. After delivery the choice is gone: the next contract uses the fastest route.
 - Without pressing D at a Fuel & Repair facility, the rig must go to the pumps and refuel as at any fuel stop, then rejoin the same carriageway. Run low on fuel before Harbor Pumps: the sat-nav must guide you to it.
 - Watch AI traffic at both facilities: it uses the pumps, never the repair bay, and merges back in without stopping on the carriageway.
 
@@ -132,9 +132,9 @@ Play these in order: it is one walk-through of the milestone. Numbers are at the
 - At Kestrel Station, a new gate on the north side leads onto Kestrel Link. The gantry at the gate and the one before the split must show Harbor Prime (Polar Express west, exit left) and Glacier Outpost (Polar Express east, keep right); limit signs show 3 near the station and 4 beyond. The outer lane ends before the split (the lane-ends warning appears), and AI traffic leaves and enters by the gate.
 - Drive Polar Express both ways past the junction (x≈900, about halfway). Two green gantries (2.2 and 1.25 km) and a side sign at the exit must announce Kestrel Station / Kestrel Link: exit right on the eastbound carriageway, exit left on the westbound one. The two left turns must cross Polar Express on flyovers drawn over the roads they cross, with lane paint and traffic lined up through the merges and the lane gain on the link.
 - Take each of the four turns once: the link to Polar Express east and west, and Polar Express east and west onto the link and into Kestrel Station, where the rig docks normally.
-- With a Harbor Prime to Glacier Outpost contract, leave on Polar Express and switch routes at the junction: press D for the exit lane onto Kestrel Link, pass through Kestrel (about 20 s dock clearance) and carry on along Frost Line without the job board. At the posted limit it takes about 147 s against the 131 s deadline: slower than staying on Polar Express (about 114 s).
+- With a Harbor Prime to Glacier Outpost contract, leave on Polar Express and switch routes at the junction: press D for the exit lane onto Kestrel Link, pass through Kestrel (about 20 s dock clearance) and carry on along Frost Line without the job board. At the posted limit it takes about 147 s against the 171 s deadline: slower than staying on Polar Express (about 114 s).
 - Open the map on the link southbound during that run: the comparison card offers "Frost Line via Kestrel Station" and "Polar Express via Kestrel Station" (both pass through the station, so each is named by its main road). Tap the second: it alone must read "✓ Following".
-- Repeat in reverse: Glacier Outpost along Frost Line, through Kestrel, out by the link gate and Polar Express west to Harbor Prime (about 149 s against 133 s). A pass-through leaves by the fastest gate, which is Harbor Run, so set a waypoint on Kestrel Link first: the rig must then leave Kestrel by the link gate. The route comparison from Glacier Outpost never offers this route (it shares Frost Line with one compared route and Polar Express with the other).
+- Repeat in reverse: Glacier Outpost along Frost Line, through Kestrel, out by the link gate and Polar Express west to Harbor Prime (about 149 s against 173 s). A pass-through leaves by the fastest gate, which is Harbor Run, so set a waypoint on Kestrel Link first: the rig must then leave Kestrel by the link gate. The route comparison from Glacier Outpost never offers this route (it shares Frost Line with one compared route and Polar Express with the other).
 
 #### Police HQ (#25)
 
@@ -148,7 +148,7 @@ Play these in order: it is one walk-through of the milestone. Numbers are at the
 #### Routing by time across the network (#21, #22, #24)
 
 - From Kestrel Station, take a contract to Terra Nova. With Harbor Run posted at 4, the sat-nav must send you over M2 and M1 through the central interchange, not along Harbor Run with a pass-through at Harbor Prime. The PR lists every station pair whose fastest route changed.
-- On a Harbor Prime job board, compare pay with the previous build. Contracts that pass through a station pay slightly less (pay counts only the physical distance of the fastest legal route). Deadlines are 1.25 times the legal time plus 45 s; only Harbor Prime–Glacier Outpost, the corridor, is held to 1.15 times a legal Polar Express run.
+- On a Harbor Prime job board, compare pay with the previous build. Contracts that pass through a station pay slightly less (pay counts only the physical distance of the fastest legal route). Deadlines are 1.25 times the legal time plus 45 s; only Harbor Prime–Glacier Outpost, the corridor, is held to 1.15 times a legal Polar Express run plus a 40 s incident allowance (about 171 s eastbound, 173 s westbound).
 - In the driving HUD, the sat-nav guidance panel must fit its text, including "Change roads here — your rig carries on by itself" before a pass-through.
 
 ## Scope boundaries

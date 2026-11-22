@@ -51,6 +51,22 @@ describe('sector map in the headless world', () => {
     expect(snapshot(scene, cam)).toEqual(before);
   });
 
+  it('opens between jobs, while driving with no contract, with nothing to compare', () => {
+    const { scene, cam } = drivingWorld();
+    G.job = null;
+    const shown: unknown[] = [];
+    scene.sectorMap = { insetTop: 90, show: (v: unknown) => shown.push(v), hide() {} } as any;
+    expect(scene.openSectorMap()).toBe(true);
+    expect(shown).toEqual([scene.sectorView]);
+    expect(scene.routeComparison()).toBeNull();
+    const before = { vehicles: scene.traffic.vs.map((v) => v.s), cam: { ...cam.midPoint } };
+    for (let i = 0; i < 30; i++) scene.update(i * 16, 16);
+    expect({ vehicles: scene.traffic.vs.map((v) => v.s), cam: { ...cam.midPoint } }).toEqual(before);
+    scene.closeSectorMap();
+    expect(scene.sectorOpen).toBe(false);
+    expect(G.paused).toBe(false);
+  });
+
   it('toggles open and closed', () => {
     const { scene } = drivingWorld();
     scene.toggleSectorMap();

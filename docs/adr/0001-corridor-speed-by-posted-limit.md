@@ -6,4 +6,5 @@ On the Harbor Prime–Glacier Outpost corridor, Polar Express (about 34.5 km per
 
 - A driver who speeds on the Kestrel route, which has fewer cameras, can beat a legal Polar run. This is the intended risk choice, not a balance bug.
 - Corridor deadlines are derived from the legal Polar time, so changing any posted limit on these roads means re-measuring deadlines.
+- Corridor deadlines add a fixed 40 s incident allowance to 1.15 times the legal Polar time, because breakdowns, accidents and roadworks ahead made legal Polar runs take 159–190 s in play; on a clear road the Kestrel route also beats the deadline, so Polar's advantage is time in hand, not the early bonus.
 - Job pay stays based on the physical distance of the fastest legal route, so changing route costs to time does not reshape pay.

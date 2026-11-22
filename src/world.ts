@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, Goal, PASS_THROUGH_DWELL, type RouteOption } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
-import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
+import { Cullable, DEPTH, BAKE, strokeRoute, markRouteEnd, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
 import { GlowLayer, makeGlowTextures } from './glow';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
@@ -30,10 +30,13 @@ export const DEADLINE: DeadlineRule = { slack: 1.25, startStop: 0, grace: 45 };
 /**
  * A direct contract between the two stations of a corridor (`Network.corridors`): 1.15 times the time a loaded rig takes
  * to drive the fast road at the posted limit, which is its legal time plus START_STOP_TIME for pulling away from the gate
- * and slowing into the dock. A legal run on the fast road beats it; a legal run on the slower route misses it (ADR 0001).
+ * and slowing into the dock, plus INCIDENT_ALLOWANCE for the breakdowns, accidents and roadworks a run meets ahead
+ * (ADR 0001). A legal clear-road run on the fast road beats it comfortably.
  */
 export const START_STOP_TIME = 7;
-export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: 0 };
+/** seconds a corridor deadline allows for incidents and roadworks ahead: rendered legal Polar runs took 159–190 s */
+export const INCIDENT_ALLOWANCE = 40;
+export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: INCIDENT_ALLOWANCE };
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -45,6 +48,10 @@ const CARGO: Record<string, string[]> = {
 };
 const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, vesta: 4, harbor: 5, glacier: 7, ember: 6 };
 
+/** a route on the comparison card: its arrival on the contract clock (`eta`), and the roads avoided to keep to it */
+export interface ComparedRoute extends RouteOption { eta: number; avoid: ReadonlySet<string> }
+/** the fastest route against the best alternative for the contract, with its deadline; `picked` is -1 when none is picked */
+export interface RouteComparison { deadline: number; elapsed: number; picked: number; options: ComparedRoute[] }
 /** what a repair bay quotes before any work; in milestone 1 there is never damage, so it is always empty */
 export interface RepairQuote { facility: string; bayId: string; text: string; items: { what: string; cost: number }[]; total: number }
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
@@ -110,8 +117,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   redAhead = false; limit = 5; blink = 0; routeRedraw = 0; remain = 0; nav: NavInfo | null = null;
   routeDiverted = false;
   private navigationT = 0;
-  /** The fastest legal route between each pair of stations: its travel time in seconds and physical distance. */
-  trips: Record<string, { time: number; distance: number }> = {};
+  /** The fastest legal route between each pair of stations, keyed `from>to` by station ID: its legal time in seconds and its physical distance. */
+  legalRoutes: Record<string, { time: number; distance: number }> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; works!: Roadworks; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
@@ -444,10 +451,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!p.goal) return;
     const pts = this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 260);
     if (pts.length < 2) return;
-    g.lineStyle(150, 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    const end = pts[pts.length - 1];
-    g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, 320); g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, 140);
+    strokeRoute(g, pts, 150, 100, 0x3ff0ff);
+    markRouteEnd(g, pts[pts.length - 1], 320, 140);
   }
 
   // ----------------------------------------------------------- zones
@@ -604,11 +609,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     sfx.click();
   }
   laneChange(d: number) {
-    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.player.state === 'crashed') return;
+    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.pstate === 'repair' || this.player.state === 'crashed') return;
     const p = this.player, seg = p.seg, n = seg.lanes;
     const fork = seg.endT?.to.svc;
     if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
-    if (seg.hq && seg === seg.hq.yard && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
+    if (seg.hq && seg === seg.hq.loop && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
     if (seg.kind !== 'motorway') { toast('Stay on the slip road for now', '#ffd27a', 1600); return; }
     const base = p.pend ?? p.lane;
     const tgt = base + d;
@@ -664,7 +669,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       this.favours.onExit(t);
       if (t.svc?.bay) toast(`Pulling into ${t.svc.name} — press D for the repair bay, A for the pumps`, '#9fe9ff', 3200);
       else if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
-      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for Polar Express or D for Kestrel Station at the loop`, '#9fe9ff', 3200);
+      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for ${t.to.hq.waysOut[0]} or D for ${t.to.hq.waysOut[1]} at the loop`, '#9fe9ff', 3200);
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
     } else if (t.type === 'merge') {
@@ -676,9 +681,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   /** in Police HQ's turning loop: leave by the way out on the left (d < 0) or the right */
   chooseHQExit(d: number) {
-    const yard = this.player.seg, end = yard.path.at(yard.len);
+    const loop = this.player.seg, end = loop.path.at(loop.len);
     const side = (t: Trans) => { const q = t.to.path.at(Math.min(200, t.to.len)); return -Math.sin(end.h) * (q.x - end.x) + Math.cos(end.h) * (q.y - end.y); };
-    const ways = yard.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
+    const ways = loop.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
     const pick = d < 0 ? ways[0] : ways[ways.length - 1];
     if (!pick || pick === this.hqOut) return;
     this.hqOut = pick;
@@ -784,13 +789,13 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   goals() {
     if (this.repairTarget?.bay) return [{ seg: this.repairTarget.bay.seg, s: this.repairTarget.bay.stopS }];
     if (this.fuelTarget) return [{ seg: this.fuelTarget.seg, s: this.fuelTarget.pumpS }];
-    if (G.job) return this.net.stationGoals(this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to]);
-    return [];
+    const st = this.jobStation();
+    return st ? this.net.stationGoals(st) : [];
   }
   computeRoute(announce: boolean) {
     const p = this.player;
     const goals = this.goals();
-    if (!G.job) this.routeChoice = null;
+    if (!G.job) this.dropRouteChoice();
     // a fuel or repair detour goes straight there; the waypoint waits until it is done
     const wp = this.fuelTarget || this.repairTarget?.bay ? null : this.waypoint;
     // a way out of Police HQ the driver picked leads the route, which carries on to the goal from there
@@ -808,7 +813,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     // a picked route only steers the way to the contract's station, not a detour to fuel or repair (and a waypoint replaces it)
     const avoid = !wp && this.jobBound() ? this.routeChoice?.avoid : undefined;
     let r: Route | null = rv || (avoid ? this.net.route(p.seg, p.s, goals, side, true, avoid) : null);
-    if (avoid && !r) { this.routeChoice = null; toast('Picked route is no longer possible — back to the fastest route', '#ffd27a', 3000); }
+    if (avoid && !r) { this.dropRouteChoice(); toast('Picked route is no longer possible — back to the fastest route', '#ffd27a', 3000); }
     if (!r && goals.length) r = this.net.route(p.seg, p.s, goals, side, true);
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
@@ -827,7 +832,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!via.length) return false;
     const q = via[0].seg.path.at(via[0].s);
     // the last choice wins: a waypoint replaces a route picked from the comparison
-    this.waypoint = { x: q.x, y: q.y, via }; this.routeChoice = null;
+    this.waypoint = { x: q.x, y: q.y, via }; this.dropRouteChoice();
     this.reroute();
     return true;
   }
@@ -863,7 +868,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
    * route's main road, each with its legal arrival against the deadline (`eta` and `deadline` are contract-clock
    * seconds). From a station gate the routes may leave by any departure. Null without a contract.
    */
-  routeComparison(): { deadline: number; elapsed: number; picked: number; options: (RouteOption & { eta: number; avoid: ReadonlySet<string> })[] } | null {
+  routeComparison(): RouteComparison | null {
     const job = G.job, st = this.jobStation();
     if (!job || !st || G.mode !== 'drive' || !this.player) return null;
     const p = this.player, gate = this.atGate();
@@ -885,10 +890,15 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.leaveGateBy(o.start.seg);
     this.computeRoute(false);
   }
+  /**
+   * Forget a route picked from the comparison, without rerouting. Every way a choice ends goes through here: a new
+   * contract or stage, delivery, a waypoint, a cancelled choice, or a picked route that is no longer possible.
+   */
+  private dropRouteChoice() { this.routeChoice = null; }
   /** cancel a picked route: the sat-nav goes back to the fastest route */
   clearRouteChoice() {
     if (!this.routeChoice) return;
-    this.routeChoice = null;
+    this.dropRouteChoice();
     this.reroute();
   }
   /** still at the gate: move the rig to the departure a picked route leaves by */
@@ -914,14 +924,14 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       if (a === b) continue;
       let best = { time: Infinity, distance: Infinity };
       for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best.time) best = { time: r.cost, distance: r.distance }; }
-      this.trips[a.id + '>' + b.id] = best;
+      this.legalRoutes[a.id + '>' + b.id] = best;
     }
   }
   makeJobs(st: Station): Job[] {
     const rank = rankOf(G.earned);
     const first = G.deliveries === 0;
     let others: Station[] = Phaser.Utils.Array.Shuffle(this.net.stations.filter((o) => o !== st));
-    if (first) others = others.sort((a, b) => (this.trips[st.id + '>' + a.id]?.time ?? 0) - (this.trips[st.id + '>' + b.id]?.time ?? 0));
+    if (first) others = others.sort((a, b) => (this.legalRoutes[st.id + '>' + a.id]?.time ?? 0) - (this.legalRoutes[st.id + '>' + b.id]?.time ?? 0));
     const jobs: Job[] = [];
     for (let i = 0; i < 3; i++) {
       const remote = !first && i === 2 && Math.random() < 0.65;
@@ -929,7 +939,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       if (remote) { from = others[0]; to = pick(this.net.stations.filter((o) => o !== from)); }
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
-      const trip = this.trips[from.id + '>' + to.id], leg = remote ? this.trips[st.id + '>' + from.id] : { time: 0, distance: 0 };
+      const trip = this.legalRoutes[from.id + '>' + to.id], leg = remote ? this.legalRoutes[st.id + '>' + from.id] : { time: 0, distance: 0 };
       const dist = trip.distance + leg.distance;
       const rule = !remote && this.net.corridor(from.id, to.id) ? CORRIDOR_DEADLINE : DEADLINE;
       const target = (trip.time + leg.time + rule.startStop * (remote ? 2 : 1)) * rule.slack + rule.grace;
@@ -944,7 +954,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   acceptJob(job: Job) {
     G.job = job;
-    this.routeChoice = null;
+    this.dropRouteChoice();
     G.mode = 'drive';
     const tesana = (window as any).Tesana;
     tesana?.gameplay?.levelStart({ levelId: job.id, levelIndex: G.deliveries });
@@ -956,15 +966,20 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     hint('start', 'Pick a speed (1–5) at the bottom of the screen, or press a number key, to pull away.');
   }
   depart(st: Station, targetId: string, auto = false) {
-    let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
     // with a waypoint set, leave by the gate that is fastest through it (if any gate reaches it); otherwise keep to a picked route
-    const via = this.waypoint?.via, avoid = via ? undefined : this.routeChoice?.avoid;
-    const cost = (seg: Seg, thru: boolean) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals, 0, false, avoid))?.cost ?? Infinity;
+    const via = this.waypoint?.via, choice = via ? undefined : this.routeChoice?.avoid;
+    const cost = (seg: Seg, thru: boolean, avoid?: ReadonlySet<string>) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals, 0, false, avoid))?.cost ?? Infinity;
+    /** the cheapest departure, and its cost (the first departure, at Infinity, when none reaches the goal) */
+    const cheapest = (thru: boolean, avoid?: ReadonlySet<string>) => {
+      let best = st.dep[0], bc = Infinity;
+      for (const seg of st.dep) { const c = cost(seg, thru, avoid); if (c < bc) { bc = c; best = seg; } }
+      return { best, bc };
+    };
     const thru = !!via && st.dep.some((seg) => cost(seg, true) < Infinity);
-    for (const seg of st.dep) { const c = cost(seg, thru); if (c < bc) { bc = c; best = seg; } }
+    const picked = cheapest(thru, choice);
     // a picked route that cannot leave from here gives way to the fastest departure
-    if (avoid && bc === Infinity) for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    const best = choice && picked.bc === Infinity ? cheapest(false).best : picked.best;
     const p = this.player;
     // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
     const lane = best.lanes - 1, lat = best.laneLat(lane);
@@ -1043,7 +1058,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       G.money += total; G.earned += total; G.deliveries++;
       tesana?.gameplay?.levelComplete({ levelId: job.id });
       G.job = null;
-      this.routeChoice = null;
+      this.dropRouteChoice();
       this.fuelTarget = null;
       this.computeRoute(false);
       this.refreshPlayerVis();
@@ -1056,7 +1071,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (job && job.stage === 'pickup' && job.from === st.id) {
       job.stage = 'deliver';
-      this.routeChoice = null;
+      this.dropRouteChoice();
       tesana?.gameplay?.checkpoint({ levelId: job.id, name: 'pickup' });
       this.refreshPlayerVis();
       toast(`Loaded ${job.cargo}! Now deliver to ${this.net.byId[job.to].name}`, '#7ff0c0', 4500);

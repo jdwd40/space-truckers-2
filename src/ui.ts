@@ -6,8 +6,8 @@ import { clamp } from './geom';
 import { sfx } from './audio';
 import { ZoneDef } from './zones';
 import { radio } from './radio';
+import { FONT } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const PANEL = 0x111a33, EDGE = 0x3c5a9a, CYAN = 0x5ad8ff;
 
 type Btn = { c: Phaser.GameObjects.Container; g: Phaser.GameObjects.Graphics; t: Phaser.GameObjects.Text; w: number; h: number; draw: (fill: number, stroke: number, alpha?: number) => void };

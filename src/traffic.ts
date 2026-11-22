@@ -528,6 +528,11 @@ export class Traffic {
     }
     return this.endFor(v, seg);
   }
+  /** v is done with (or never reached) the pump it was given: free it for the next vehicle */
+  private releasePump(v: Veh) {
+    if (v.svc && v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;
+    v.svc = null; v.pump = -1; v.pumpDone = false; v.latT = null;
+  }
   /** where v carries on at the end of seg: a road that forks (a Fuel & Repair entry) takes the branch v is routed along */
   private endFor(v: Veh, seg: Seg): Trans | null {
     const r = v.route[0];
@@ -721,14 +726,10 @@ export class Traffic {
     v.pend = null;
     if (v.gate) { v.gate = null; v.stopAt = null; }
     // a pump held for a vehicle that turned off to the repair bay instead
-    if (v.svc && !old.svc && t.to !== v.svc.seg) {
-      if (v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;
-      v.svc = null; v.pump = -1; v.pumpDone = false; v.latT = null;
-    }
+    if (v.svc && !old.svc && t.to !== v.svc.seg) this.releasePump(v);
     if (old.svc) {
       if (this.leaving.get(old.svc) === v) this.leaving.set(old.svc, null);
-      if (v.svc && v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;
-      v.svc = null; v.pump = -1; v.pumpDone = false; v.latT = null;
+      this.releasePump(v);
       if (!v.isPlayer) { v.svcTarget = null; v.route = []; this.reroute(v); return; }
     }
     if (v.isPlayer) this.ctl.onTrans(v, t);

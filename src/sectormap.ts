@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { WorldScene } from './world';
-import type { Network, Road, Seg } from './network';
+import { FACILITY_NAME, type FacilityKind, type Network, type Road, type Seg } from './network';
 import { RoadLabels } from './maplabels';
 import { MapInspector } from './mapinspect';
 import type { Pt } from './geom';
@@ -8,14 +8,14 @@ import { SectorView } from './sectorview';
 import { toast } from './state';
 import { sfx } from './audio';
 import { RoutePanel } from './routepanel';
+import { FONT, strokeRoute, markRouteEnd } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const BG = 0x070c22;
 /** from this zoom (screen px per world unit) lanes are wide enough to draw lane lines */
 const LANES_ZOOM = 0.18;
 
 /** a facility the sector map marks and labels, by its stable network id */
-export interface MapFeature { id: string; kind: 'fuel' | 'fuel-repair' | 'layby' | 'police-hq'; name: string; x: number; y: number }
+export interface MapFeature { id: string; kind: FacilityKind; name: string; x: number; y: number }
 /** the facilities the sector map shows, from the network */
 export function mapFeatures(net: Network): MapFeature[] {
   return [
@@ -25,9 +25,9 @@ export function mapFeatures(net: Network): MapFeature[] {
   ];
 }
 /** marker and label colours by facility kind */
-const FEATURE_LOOK: Record<MapFeature['kind'], { fill: number; text: string; r: number; minZoom: number; suffix: string }> = {
+const FEATURE_LOOK: Record<FacilityKind, { fill: number; text: string; r: number; minZoom: number; suffix: string }> = {
   fuel: { fill: 0x2f7de1, text: '#9fd0ff', r: 160, minZoom: 0.05, suffix: '' },
-  'fuel-repair': { fill: 0xe08a2f, text: '#ffd09a', r: 180, minZoom: 0.035, suffix: ' · Fuel & Repair' },
+  'fuel-repair': { fill: 0xe08a2f, text: '#ffd09a', r: 180, minZoom: 0.035, suffix: ` · ${FACILITY_NAME['fuel-repair']}` },
   layby: { fill: 0x3c9a6a, text: '#a8e6c4', r: 90, minZoom: 0.12, suffix: '' },
   'police-hq': { fill: 0x3a5bd8, text: '#b8c8ff', r: 110, minZoom: 0.03, suffix: '' },
 };
@@ -108,11 +108,8 @@ export class SectorMapScene extends Phaser.Scene {
       if (!p.goal) return;
       const pts = this.world.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, Math.max(80, px * 6));
       if (pts.length < 2) return;
-      g.lineStyle(Math.max(100, px * 6), 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-      g.lineStyle(Math.max(60, px * 3.5), 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-      const end = pts[pts.length - 1];
-      g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, Math.max(200, px * 9));
-      g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, Math.max(90, px * 4));
+      strokeRoute(g, pts, Math.max(100, px * 6), Math.max(60, px * 3.5), 0x3ff0ff);
+      markRouteEnd(g, pts[pts.length - 1], Math.max(200, px * 9), Math.max(90, px * 4));
     });
     // the waypoint: a pin on the road, drawn over the route
     this.overlays.push((g, _v, px) => {
