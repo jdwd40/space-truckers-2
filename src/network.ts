@@ -1150,7 +1150,10 @@ export class Network {
     const fast = best();
     if (!fast) return [];
     const alt = best(new Set([fast.mainRoad]));
-    return alt ? [fast, alt] : [fast];
+    if (!alt) return [fast];
+    // two routes through the same station(s) are told apart by the road each mainly drives (a picked route is kept by name)
+    if (alt.name === fast.name) for (const o of [fast, alt]) o.name = `${o.mainRoad} via ${o.passThrough.map((st) => st.name).join(' and ')}`;
+    return [fast, alt];
   }
 
   /** the stretches of carriageway a route drives, in order */

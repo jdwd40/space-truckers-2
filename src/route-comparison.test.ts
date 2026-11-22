@@ -68,4 +68,15 @@ describe('comparing routes for a contract', () => {
     expect(options).toHaveLength(1);
     expect(options[0].mainRoad).toBe('Polar Express');
   });
+
+  it('names two routes through the same station apart, by the road each mainly drives', () => {
+    // just after turning off Polar Express onto Kestrel Link southbound, both ways to Glacier Outpost pass through
+    // Kestrel Station: on along Frost Line, or back up the link and east on Polar Express
+    const linkSouth = net.roads.find((rd) => rd.name === 'Kestrel Link')!.r[0];
+    const [a, b] = net.compareRoutes([{ seg: linkSouth, s: 5 }], net.stationGoals(glacier));
+    expect(a.passThrough.map((st) => st.name)).toEqual(['Kestrel Station']);
+    expect(b.passThrough.map((st) => st.name)).toEqual(['Kestrel Station']);
+    expect(a.name).toBe('Frost Line via Kestrel Station');
+    expect(b.name).toBe('Polar Express via Kestrel Station');
+  });
 });
