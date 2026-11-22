@@ -8,8 +8,8 @@ import { SectorView } from './sectorview';
 import { toast } from './state';
 import { sfx } from './audio';
 import { RoutePanel } from './routepanel';
+import { FONT, strokeRoute, markRouteEnd } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const BG = 0x070c22;
 /** from this zoom (screen px per world unit) lanes are wide enough to draw lane lines */
 const LANES_ZOOM = 0.18;
@@ -108,11 +108,8 @@ export class SectorMapScene extends Phaser.Scene {
       if (!p.goal) return;
       const pts = this.world.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, Math.max(80, px * 6));
       if (pts.length < 2) return;
-      g.lineStyle(Math.max(100, px * 6), 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-      g.lineStyle(Math.max(60, px * 3.5), 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-      const end = pts[pts.length - 1];
-      g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, Math.max(200, px * 9));
-      g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, Math.max(90, px * 4));
+      strokeRoute(g, pts, Math.max(100, px * 6), Math.max(60, px * 3.5), 0x3ff0ff);
+      markRouteEnd(g, pts[pts.length - 1], Math.max(200, px * 9), Math.max(90, px * 4));
     });
     // the waypoint: a pin on the road, drawn over the route
     this.overlays.push((g, _v, px) => {

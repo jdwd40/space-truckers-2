@@ -4,8 +4,8 @@ import type { Pt } from './geom';
 import { SPEEDS } from './speeds';
 import { KMH } from './state';
 import type { SectorMapScene } from './sectormap';
+import { FONT } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 /** how far from a tap or the mouse to look for something to inspect, in screen pixels */
 const TAP_PX = 22, HOVER_PX = 12;
 

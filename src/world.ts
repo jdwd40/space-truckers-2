@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, Goal, PASS_THROUGH_DWELL, type RouteOption } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
-import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
+import { Cullable, DEPTH, BAKE, strokeRoute, markRouteEnd, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
 import { GlowLayer, makeGlowTextures } from './glow';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
@@ -447,10 +447,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!p.goal) return;
     const pts = this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 260);
     if (pts.length < 2) return;
-    g.lineStyle(150, 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    const end = pts[pts.length - 1];
-    g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, 320); g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, 140);
+    strokeRoute(g, pts, 150, 100, 0x3ff0ff);
+    markRouteEnd(g, pts[pts.length - 1], 320, 140);
   }
 
   // ----------------------------------------------------------- zones

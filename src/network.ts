@@ -375,10 +375,7 @@ export class Network {
     const d1 = Math.hypot(pa.x - p0.x, pa.y - p0.y) * 0.42;
     const entry = this.seg(name + ' in', new Path(bezier(p0, { x: p0.x + Math.cos(p0.h) * d1, y: p0.y + Math.sin(p0.h) * d1 }, { x: pa.x - Math.cos(hP) * d1, y: pa.y - Math.sin(hP) * d1 }, pa, 60)), 1, 'ramp', 0, 3);
     entry.road = name;
-    const ax: Aux = { side: 1, s0: s0 - 650, s1: s0, type: 'exit' };
-    host.aux.push(ax);
-    const te = this.addT({ type: 'exit', from: host, fromS: s0, to: entry, toS: 0, side: 1, latShift: 0, label: name, kind: 'services', dir: 'R', aux: ax });
-    ax.trans = te;
+    const te = this.exitTo(host, s0, 1, 650, entry, name, 'services');
     entry.endT = this.addT({ type: 'end', from: entry, fromS: entry.len, to: ps, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
     const m = b + 330;
     const p3 = this.auxPt(host, m, 1);
@@ -386,10 +383,7 @@ export class Network {
     const exitR = this.seg(name + ' out', new Path(bezier(pb, { x: pb.x + Math.cos(hP) * d2, y: pb.y + Math.sin(hP) * d2 }, { x: p3.x - Math.cos(p3.h) * d2, y: p3.y - Math.sin(p3.h) * d2 }, p3, 60)), 1, 'ramp', 0, 3);
     exitR.road = name;
     ps.endT = this.addT({ type: 'end', from: ps, fromS: ps.len, to: exitR, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
-    const am: Aux = { side: 1, s0: m, s1: m + 560, type: 'merge' };
-    host.aux.push(am);
-    exitR.endT = this.addT({ type: 'merge', from: exitR, fromS: exitR.len, to: host, toS: m, side: 1, latShift: 0, label: host.road, kind: 'link', dir: 'S', aux: am });
-    am.trans = exitR.endT;
+    this.mergeOnto(exitR, host, m, 1, 560);
     const mid = host.path.at((a + b) / 2, latC);
     const id = `services:${slug(name)}`;
     const svc: Services = { id, kind: repair ? 'fuel-repair' : 'fuel', name, size: pumps, host, seg: ps, pumps: [], waitS: 26, pumpS: 205, exit: te, x: mid.x, y: mid.y, h: hP, bay: null };
@@ -412,10 +406,7 @@ export class Network {
       const bayOut = this.seg(name + ' repair out', new Path(bezier(q1, { x: q1.x + Math.cos(hP) * d3, y: q1.y + Math.sin(hP) * d3 }, { x: p4.x - Math.cos(p4.h) * d3, y: p4.y - Math.sin(p4.h) * d3 }, p4, 60)), 1, 'ramp', 0, 3);
       bayOut.road = name;
       bay.endT = this.addT({ type: 'end', from: bay, fromS: bay.len, to: bayOut, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
-      const am2: Aux = { side: 1, s0: m2, s1: m2 + 560, type: 'merge' };
-      host.aux.push(am2);
-      bayOut.endT = this.addT({ type: 'merge', from: bayOut, fromS: bayOut.len, to: host, toS: m2, side: 1, latShift: 0, label: host.road, kind: 'link', dir: 'S', aux: am2 });
-      am2.trans = bayOut.endT;
+      this.mergeOnto(bayOut, host, m2, 1, 560);
       const stopS = bay.len - 60, sp = bay.path.at(stopS);
       svc.bay = { id: `${id}:bay`, facility: svc, seg: bay, stopS, x: sp.x, y: sp.y, h: sp.h };
       bay.bay = svc.bay;
@@ -516,16 +507,12 @@ export class Network {
     const toEast = this.slip(`Kestrel Link ramp ${glacier.name}`, north.path.at(north.len, north.laneLat(0)), 250, this.auxPt(east, mE, 1), 900, 3);
     north.drop = north.lanes - toEast.lanes; north.next = toEast; toEast.prev = north;
     north.endT = this.addT({ type: 'end', from: north, fromS: north.len, to: toEast, toS: 0, side: 1, latShift: ((north.lanes - toEast.lanes) * LW) / 2, label: glacier.name, kind: 'link', dir: 'S' });
-    const amE: Aux = { side: 1, s0: mE, s1: mE + 560, type: 'merge' };
-    east.aux.push(amE);
-    toEast.endT = amE.trans = this.addT({ type: 'merge', from: toEast, fromS: toEast.len, to: east, toS: mE, side: 1, latShift: 0, label: polar.name, kind: 'link', dir: 'S', aux: amE });
+    this.mergeOnto(toEast, east, mE, 1, 560);
 
     // right turn Polar Express east → south: the slip road becomes the link's southbound carriageway, gaining its outer lane
     const xE = sE - 1400;
     const fromEast = this.slip(`Polar Express ramp ${kestrel.name}`, this.auxPt(east, xE, 1), 900, south.path.at(0, south.laneLat(0)), 250, 3);
-    const axE: Aux = { side: 1, s0: xE - 900, s1: xE, type: 'exit' };
-    east.aux.push(axE);
-    axE.trans = this.addT({ type: 'exit', from: east, fromS: xE, to: fromEast, toS: 0, side: 1, latShift: 0, label: kestrel.name, kind: 'jct', dir: 'R', aux: axE });
+    this.exitTo(east, xE, 1, 900, fromEast, kestrel.name, 'jct');
     south.gain = south.lanes - fromEast.lanes; fromEast.next = south; south.prev = fromEast;
     fromEast.endT = this.addT({ type: 'end', from: fromEast, fromS: fromEast.len, to: south, toS: 0, side: 1, latShift: ((fromEast.lanes - south.lanes) * LW) / 2, label: link.name, kind: 'link', dir: 'S' });
 
@@ -717,7 +704,7 @@ export class Network {
       const l = this.locate(segs, s), seg = l.seg;
       const p = seg.path.at(l.s, seg.laneLat(seg.lanes) + 60);
       const rd = this.roads.find((r) => r.f === segs || r.r === segs)!;
-      const id = `cam-${rd.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${rd.f === segs ? 'f' : 'r'}-${Math.round(s)}`;
+      const id = `cam-${slug(rd.name)}-${rd.f === segs ? 'f' : 'r'}-${Math.round(s)}`;
       this.cameras.push({ id, seg, s: l.s, x: p.x, y: p.y });
       this.signs.push({ ...this.place(seg, l.s - 800), kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
     };

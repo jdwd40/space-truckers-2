@@ -787,8 +787,21 @@ export function drawWorld(scene: Phaser.Scene, net: Network, layer: Phaser.GameO
   return items;
 }
 
+// ---------------------------------------------------------------- shared look
+/** the typeface of every sign, HUD and map label */
+export const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
+/** a route line as on the sat-nav and sector map: a dark casing `casing` wide under a `width`-wide line of `color` */
+export function strokeRoute(g: G, pts: Pt[], casing: number, width: number, color: number, alpha = 1) {
+  g.lineStyle(casing, 0x0c1534, alpha); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
+  g.lineStyle(width, color, alpha); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
+}
+/** the yellow ring at the end of a route */
+export function markRouteEnd(g: G, end: Pt, outer: number, inner: number) {
+  g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, outer);
+  g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, inner);
+}
+
 // ---------------------------------------------------------------- signs
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 
 function drawArrow(g: G, x: number, y: number, size: number, arrow: number | 'U', color = 0xffffff) {
   g.lineStyle(size * 0.22, color, 1); g.fillStyle(color, 1);

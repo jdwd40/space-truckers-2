@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { SectorMapScene } from './sectormap';
+import { FONT, strokeRoute } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 /** the route the sat-nav follows is cyan, as on the rest of the map; the other compared route is amber */
 const FOLLOWED = 0x3ff0ff, OTHER = 0xffa64d;
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
@@ -30,8 +30,7 @@ export class RoutePanel {
         if (i === active) return;
         const pts = map.world.net.routePoints(o.route, o.start.seg, o.start.s, Math.max(80, px * 6));
         if (pts.length < 2) return;
-        g.lineStyle(Math.max(80, px * 5), 0x0c1534, 0.9); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
-        g.lineStyle(Math.max(45, px * 2.5), OTHER, 0.9); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[]);
+        strokeRoute(g, pts, Math.max(80, px * 5), Math.max(45, px * 2.5), OTHER, 0.9);
       });
     });
   }
