@@ -28,36 +28,31 @@ describe('routing by travel time at the posted limit', () => {
     const through = net.route(arr, arr.len - 150, goal)!;
     expect(through.trans.map((t) => t.kind)).toEqual(['dock']);
     const extra = through.cost - net.route(dep, 150, goal)!.cost;
-    // stopping at the dock, pausing and pulling away costs seconds, not a free U-turn
-    expect(extra).toBeGreaterThan(8);
-    expect(extra).toBeLessThan(20);
+    // stopping at the dock, waiting for clearance and pulling away costs seconds, not a free U-turn
+    expect(extra).toBeGreaterThan(20);
+    expect(extra).toBeLessThan(35);
   });
 
   it('reports the physical length of a route separately from its time', () => {
     const harbor = station('Harbor Prime'), glacier = station('Glacier Outpost');
     const runs = harbor.dep.map((seg) => net.route(seg, 100, net.stationGoals(glacier))!).sort((a, b) => a.cost - b.cost);
-    // Harbor Run, a pass-through at Kestrel, then Frost Line: about 25.9 km, driven in a few minutes
-    expect(runs[0].distance).toBeCloseTo(25932, -1);
+    // Polar Express: about 34.0 km, driven in a couple of minutes
+    expect(runs[0].distance).toBeCloseTo(33985, -1);
     expect(runs[0].cost).toBeGreaterThan(60);
     expect(runs[0].cost).toBeLessThan(200);
   });
 
-  it('sends Harbor Prime to Glacier Outpost traffic via Polar Express once the Kestrel route is posted slower', () => {
-    const slowed = new Network(), harbor = slowed.stations.find((st) => st.name === 'Harbor Prime')!;
-    const glacier = slowed.stations.find((st) => st.name === 'Glacier Outpost')!;
-    const fastest = () => harbor.dep.map((seg) => ({ seg, r: slowed.route(seg, 100, slowed.stationGoals(glacier))! }))
+  it('sends Harbor Prime to Glacier Outpost traffic via Polar Express, where the shorter Kestrel route is posted slower', () => {
+    const harbor = station('Harbor Prime'), glacier = station('Glacier Outpost');
+    const after = harbor.dep.map((seg) => ({ seg, r: net.route(seg, 100, net.stationGoals(glacier))! }))
       .sort((a, b) => a.r.cost - b.r.cost)[0];
-    const roadsOf = ({ seg, r }: { seg: typeof harbor.dep[0]; r: Route }) => [seg.road, ...r.trans.map((t) => t.to.road)];
-    expect(roadsOf(fastest())).toContain('Harbor Run');
-    // the shorter Kestrel route is 8 km shorter, but at posted limit 2 on Harbor Run it is no longer the faster one
-    for (const seg of slowed.segs.filter((sg) => sg.road === 'Harbor Run' && sg.kind === 'motorway')) { seg.limit = 2; seg.limits.fill(2); }
-    const after = fastest();
-    expect(roadsOf(after)).toContain('Polar Express');
+    // the Kestrel route is 8 km shorter, but at posted limit 4 with a pass-through it is not the faster one
+    expect(after.seg.road).toBe('Polar Express');
     expect(after.r.trans.some((t) => t.kind === 'dock')).toBe(false);
 
     // AI traffic leaving Harbor Prime for Glacier Outpost takes the same road
     const ctl: PlayerCtl = { desired: () => 345, extraGap: () => Infinity, obeySignal: () => true, brakeMin: () => null, onTrans() {}, onBlocked() {}, onRouteNeeded() {} };
-    const traffic = new Traffic(slowed, ctl);
+    const traffic = new Traffic(net, ctl);
     const npc = traffic.add('van', after.seg, 100, 0, 100);
     npc.dest = glacier.id;
     traffic.reroute(npc);

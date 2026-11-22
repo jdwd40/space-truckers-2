@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, PASS_THROUGH_DWELL } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
 import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
@@ -19,9 +19,14 @@ import { advanceCameraOverview, calculateCameraTargets } from './camera';
 import { SectorView } from './sectorview';
 import type { SectorMapScene } from './sectormap';
 
-const STATION_R = 1250;
-/** A contract deadline is the legal travel time of its fastest route, times this slack, plus a grace period in seconds. */
-const DEADLINE_SLACK = 1.25, DEADLINE_GRACE = 45;
+export const STATION_R = 1250;
+/**
+ * A contract deadline is the time a loaded rig takes to drive its fastest route at the posted limit, times this slack.
+ * That driven time is the route's legal time plus START_STOP_TIME for each leg: pulling away from the gate and slowing
+ * into the dock. On the Harbor Prime–Glacier Outpost corridor this makes the deadline 1.15 times a legal Polar Express
+ * run, which a legal run via Kestrel Station misses (ADR 0001).
+ */
+export const DEADLINE_SLACK = 1.15, START_STOP_TIME = 7;
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -794,11 +799,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
       const trip = this.trips[from.id + '>' + to.id], leg = remote ? this.trips[st.id + '>' + from.id] : { time: 0, distance: 0 };
-      const dist = trip.distance + leg.distance, legal = trip.time + leg.time;
+      const dist = trip.distance + leg.distance, legal = trip.time + leg.time + START_STOP_TIME * (remote ? 2 : 1);
       const pay = Math.round(((80 + (dist / 1000) * 15) * CLASSES[cls].mult * (remote ? 1.2 : 1)) / 5) * 5;
       jobs.push({
         id: `${from.id}-${to.id}`, cargo: pick(CARGO[from.id]), from: from.id, to: to.id, cls, pay, dist,
-        stage: from === st ? 'deliver' : 'pickup', target: legal * DEADLINE_SLACK + DEADLINE_GRACE, elapsed: 0,
+        stage: from === st ? 'deliver' : 'pickup', target: legal * DEADLINE_SLACK, elapsed: 0,
         locked: CLASSES[cls].rank > rank, remote,
       });
     }
@@ -919,8 +924,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (job) {
       const tgt = job.stage === 'pickup' ? job.from : job.to;
-      toast(`Passing through ${st.name} — on to ${this.net.byId[tgt].name}`, '#9fe9ff', 3500);
-      this.after(1.5, () => this.depart(st, tgt, true));
+      toast(`Passing through ${st.name} — waiting for dock clearance, then on to ${this.net.byId[tgt].name}`, '#9fe9ff', 3500);
+      this.after(PASS_THROUGH_DWELL, () => this.depart(st, tgt, true));
       return;
     }
     G.mode = 'board';
