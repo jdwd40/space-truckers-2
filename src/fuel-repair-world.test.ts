@@ -3,7 +3,7 @@ vi.mock('phaser', () => ({ default: { Events: { EventEmitter: class { emit() {} 
 import { WorldScene } from './world';
 import { Network, type Services } from './network';
 import { Traffic } from './traffic';
-import { G } from './state';
+import { G, bus } from './state';
 
 /** a headless world with a loaded rig on Harbor Run eastbound, 900 m before the named facility's exit */
 function worldBefore(name: string, job = { from: 'harbor', to: 'glacier', stage: 'deliver', cls: 0 }) {
@@ -70,6 +70,23 @@ describe('Fuel & Repair in the world', () => {
     expect(step(90, () => rd.f.includes(p.seg) && p.lane >= 0 && p.lane < p.seg.lanes)).toBe(true);
     expect(p.s - net.chainStart(p.seg)).toBeGreaterThan(exitAt);
     expect(p.route.length + (p.goal ? 1 : 0)).toBeGreaterThan(0);
+  });
+
+  it('ignores A and D while the rig waits in the repair bay for the quote', () => {
+    const w = worldBefore('Harbor Pumps');
+    const { scene, sv, p, step } = w;
+    takeExit(w);
+    scene.laneChange(1);
+    expect(step(60, () => scene.pstate === 'repair')).toBe(true);
+    const emit = vi.spyOn(bus, 'emit');
+    const repairTarget = scene.repairTarget, lane = p.lane, pend = p.pend;
+    scene.laneChange(-1);
+    scene.laneChange(1);
+    expect(emit).not.toHaveBeenCalled();
+    expect(scene.repairTarget).toBe(repairTarget);
+    expect([p.lane, p.pend]).toEqual([lane, pend]);
+    expect(scene.pstate).toBe('repair');
+    expect(p.seg).toBe(sv.bay!.seg);
   });
 
   it('carries on to the pumps when the bay is not chosen, and fills the tank as at any fuel stop', () => {

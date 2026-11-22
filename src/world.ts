@@ -607,7 +607,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     sfx.click();
   }
   laneChange(d: number) {
-    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.player.state === 'crashed') return;
+    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.pstate === 'repair' || this.player.state === 'crashed') return;
     const p = this.player, seg = p.seg, n = seg.lanes;
     const fork = seg.endT?.to.svc;
     if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
