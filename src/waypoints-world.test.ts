@@ -145,4 +145,18 @@ describe('waypoints in the world', () => {
     expect(p.seg.road).toBe('M2');
     expect(routeMiss(scene, scene.waypoint!)).toBeLessThan(150);
   });
+
+  it('replaces a route picked from the comparison, and is replaced by one', () => {
+    const { scene, onRoad } = worldOnHarborRun();
+    scene.pickRoute(0);
+    expect(scene.routeChoice).not.toBeNull();
+    const a = onRoad('M2', 0.12);
+    scene.setWaypoint(a.x, a.y);
+    expect(scene.routeChoice).toBeNull();
+    expect(roadsOn(scene)).toContain('M2');
+    scene.pickRoute(0);
+    expect(scene.routeChoice).not.toBeNull();
+    expect(scene.waypoint).toBeNull();
+    expect(roadsOn(scene)).not.toContain('M2');
+  });
 });

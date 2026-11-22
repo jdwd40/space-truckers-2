@@ -39,14 +39,26 @@ export interface Goal { seg: Seg; s: number }
 export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
 /** a route through a waypoint: `via` is the place on the road it passes, and `goal` is where it ends (`via` itself with no goal) */
 export interface ViaRoute extends Route { via: Goal }
-export interface Camera { seg: Seg; s: number; x: number; y: number }
+/** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
+export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
 /** an axis-aligned world rectangle */
+/**
+ * One route offered in a route comparison. `start` is where it begins (which departure, for a rig at a station gate);
+ * `mainRoad` the road it drives furthest on; `roads` the roads it drives, in order; `passThrough` the stations it docks
+ * at on the way; `cameras` and `facilities` (fuel stops and Fuel & Repair) those on the carriageways it drives, in order.
+ */
+export interface RouteOption {
+  name: string; start: Goal; route: Route; mainRoad: string; roads: string[]; passThrough: Station[];
+  cameras: Camera[]; facilities: Services[];
+}
 export interface Bounds { x0: number; y0: number; x1: number; y1: number; w: number; h: number }
 /** how far the map extent reaches past the outermost road edge: room for a station disc and its label */
 export const MAP_MARGIN = 1800;
 
-/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the pause and pulling away again. */
-export const PASS_THROUGH_TIME = 12;
+/** Seconds a rig waits for dock clearance when it passes through a station before it is sent on towards its goal. */
+export const PASS_THROUGH_DWELL = 20;
+/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the clearance wait and pulling away again. */
+export const PASS_THROUGH_TIME = PASS_THROUGH_DWELL + 6;
 /** seconds the router adds for turning into a repair bay, so it only routes through one when the bay is the goal */
 export const REPAIR_BAY_TIME = 60;
 /** Seconds of delay the router expects from each stopped vehicle in a substantial queue. */
@@ -478,6 +490,8 @@ export class Network {
     this.gates(CR, ember, terra, 4.2);
     for (const r of [AU, HR, FL, SH]) for (const s of both(r)) s.localOK = true;
     for (const r of [IR, CR]) for (const s of both(r)) { s.trucky = true; s.density = 0.55; }
+    // the Kestrel route is posted below Polar Express, so the longer direct road is the faster legal route (ADR 0001)
+    for (const r of [HR, FL]) for (const s of both(r)) s.limit = 4;
 
     // Outer orbital links have their own station gates: journeys need not traverse the central hubs.
     const polar = this.road('Polar Express', P([[-15000, -15500], [-15000, -17500], [-12000, -18500], [-6500, -19000], [0, -19500], [6500, -19000], [12000, -18000], [15000, -16700], [15000, -15000]]), 3, 3);
@@ -517,7 +531,9 @@ export class Network {
     const cam = (segs: Seg[], s: number) => {
       const l = this.locate(segs, s), seg = l.seg;
       const p = seg.path.at(l.s, seg.laneLat(seg.lanes) + 60);
-      this.cameras.push({ seg, s: l.s, x: p.x, y: p.y });
+      const rd = this.roads.find((r) => r.f === segs || r.r === segs)!;
+      const id = `cam-${rd.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${rd.f === segs ? 'f' : 'r'}-${Math.round(s)}`;
+      this.cameras.push({ id, seg, s: l.s, x: p.x, y: p.y });
       this.signs.push({ ...this.place(seg, l.s - 800), kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
     };
     svc(M1.f, 5200, 4, 'Nebula Services');
@@ -570,8 +586,8 @@ export class Network {
       lay(rd.r, q(0.32));
       svc(rd.r, q(0.6), pumps[1], names[1]);
       lay(rd.r, q(0.75));
-      cam(rd.f, q(0.62));
-      cam(rd.r, q(0.5));
+      // Frost Line has no cameras: the Kestrel route is the lower-risk road for drivers who push the limit
+      if (rd !== FL) { cam(rd.f, q(0.62)); cam(rd.r, q(0.5)); }
     };
     furnish(AU, terra, harbor, ['Aurora Fuel', 'Skyline Stop'], [3, 2]);
     furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3], 0.39);
@@ -581,6 +597,11 @@ export class Network {
     furnish(CR, ember, terra, ['Cinder Stop', 'Ashfall Fuel'], [2, 2]);
 
     cam(M1.f, 19300); cam(M1.r, 11300); cam(M2.f, 19400); cam(M2.r, 11200);
+
+    // Polar Express: the fast corridor road has cameras and lay-bys but no fuel. The middle stays clear for a junction.
+    const pq = (segs: Seg[], x: number) => Math.round((segs.reduce((a, sg) => a + sg.len, 0) * x) / 100) * 100;
+    lay(polar.f, pq(polar.f, 0.2)); cam(polar.f, pq(polar.f, 0.3)); lay(polar.f, pq(polar.f, 0.7)); cam(polar.f, pq(polar.f, 0.8));
+    lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
     // Opposing directions use separate decks where the inner slips cross the other carriageway.
@@ -643,9 +664,9 @@ export class Network {
       for (let i = 0; i < n; i++) {
         let lim = seg.limit;
         if (seg.kind === 'motorway') {
+          // a motorway is posted at its road's limit (5 unless lowered), and lower near the centre, crossings and stations
           const p = seg.path.at(i * 100);
-          lim = 5;
-          if (Math.hypot(p.x, p.y) < 4300) lim = 4;
+          if (Math.hypot(p.x, p.y) < 4300) lim = Math.min(lim, 4);
           for (const c of this.crossings) if (Math.hypot(p.x - c.x, p.y - c.y) < 2300) lim = 3;
           for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < 3300) lim = 3;
         }
@@ -715,14 +736,17 @@ export class Network {
   }
 
   /** Fastest route by travel time at the posted limit. Opt in to live congestion costs; leave false for legal travel times. */
-  route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false): Route | null {
+  route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): Route | null {
+    /** `avoid`: roads the route may not drive on (it fails if it starts on one) */
+    const banned = (t: Trans) => !!avoid?.has(t.to.road);
+    if (avoid?.has(seg.road)) return null;
     const cost = (road: Seg, from: number, to: number) => this.routingCost(road, from, to, avoidTraffic);
     let best = Infinity, bestT: Trans | null = null, bestG: Goal | null = null, direct = false;
     for (const g of goals) if (g.seg === seg && g.s >= s - 1 && cost(seg, s, g.s) < best) { best = cost(seg, s, g.s); bestG = g; direct = true; }
     const dist = new Map<Trans, number>(), prev = new Map<Trans, Trans | null>(), done = new Set<Trans>();
     for (const t of seg.outs) {
       const ahead = t.fromS - s;
-      if (ahead < -1) continue;
+      if (ahead < -1 || banned(t)) continue;
       if (t.type === 'exit' && ahead < 90 && auxSide !== t.side) continue;
       dist.set(t, cost(seg, s, t.fromS) + (t.pen ?? 0)); prev.set(t, null);
     }
@@ -734,7 +758,7 @@ export class Network {
       const ns = cur.to, s0 = cur.toS;
       for (const g of goals) if (g.seg === ns && g.s >= s0 && cd + cost(ns, s0, g.s) < best) { best = cd + cost(ns, s0, g.s); bestG = g; bestT = cur; direct = false; }
       for (const u of ns.outs) {
-        if (u.fromS < s0 + (u.type === 'exit' ? 60 : -1)) continue;
+        if (u.fromS < s0 + (u.type === 'exit' ? 60 : -1) || banned(u)) continue;
         const nd = cd + cost(ns, s0, u.fromS) + (u.pen ?? 0);
         if (nd < (dist.get(u) ?? Infinity)) { dist.set(u, nd); prev.set(u, cur); }
       }
@@ -768,14 +792,15 @@ export class Network {
   /**
    * The fastest route that passes one of the waypoint places `via` (from `waypointGoals`) and then reaches one of `goals`;
    * with no goals it ends at the waypoint. Its trans list is the two legs end to end, so it is followed, drawn and costed
-   * like any other route. Null when no waypoint place can be reached, or none leads on to a goal.
+   * like any other route. `avoid` keeps both legs off the named roads, as for `route`. Null when no waypoint place can be
+   * reached, or none leads on to a goal.
    */
-  routeVia(seg: Seg, s: number, via: Goal[], goals: Goal[], auxSide = 0, avoidTraffic = false): ViaRoute | null {
+  routeVia(seg: Seg, s: number, via: Goal[], goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): ViaRoute | null {
     let best: ViaRoute | null = null;
     for (const v of via) {
-      const a = this.route(seg, s, [v], auxSide, avoidTraffic);
+      const a = this.route(seg, s, [v], auxSide, avoidTraffic, avoid);
       if (!a) continue;
-      const b = goals.length ? this.route(v.seg, v.s, goals, 0, avoidTraffic) : null;
+      const b = goals.length ? this.route(v.seg, v.s, goals, 0, avoidTraffic, avoid) : null;
       if (goals.length && !b) continue;
       const r: ViaRoute = b
         ? { trans: [...a.trans, ...b.trans], goal: b.goal, cost: a.cost + b.cost, distance: a.distance + b.distance, diverted: a.diverted || b.diverted, via: v }
@@ -783,6 +808,53 @@ export class Network {
       if (!best || r.cost < best.cost) best = r;
     }
     return best;
+  }
+
+  /**
+   * Route comparison: the fastest legal route from any of `starts` to the goals, and the fastest legal route that never
+   * drives on the first one's main road. Each comes with the cameras and fuel and repair facilities along it. There is
+   * only one option when nothing avoids the main road, and none when the goals cannot be reached.
+   */
+  compareRoutes(starts: Goal[], goals: Goal[]): RouteOption[] {
+    const best = (avoid?: ReadonlySet<string>) => {
+      let out: { start: Goal; route: Route } | null = null;
+      for (const st of starts) {
+        const r = this.route(st.seg, st.s, goals, 0, false, avoid);
+        if (r && (!out || r.cost < out.route.cost)) out = { start: st, route: r };
+      }
+      return out && this.describeRoute(out.start, out.route);
+    };
+    const fast = best();
+    if (!fast) return [];
+    const alt = best(new Set([fast.mainRoad]));
+    return alt ? [fast, alt] : [fast];
+  }
+
+  /** the stretches of carriageway a route drives, in order */
+  routeStretches(r: Pick<Route, 'trans' | 'goal'>, seg: Seg, s: number): { seg: Seg; s0: number; s1: number }[] {
+    const out: { seg: Seg; s0: number; s1: number }[] = [];
+    let cs = seg, ss = s;
+    for (const t of r.trans) { out.push({ seg: cs, s0: ss, s1: t.fromS }); cs = t.to; ss = t.toS; }
+    out.push({ seg: cs, s0: ss, s1: r.goal.s });
+    return out;
+  }
+
+  private describeRoute(start: Goal, route: Route): RouteOption {
+    const parts = this.routeStretches(route, start.seg, start.s);
+    const on = (seg: Seg, s: number) => parts.some((p) => p.seg === seg && s >= p.s0 && s <= p.s1);
+    const byRoad = new Map<string, number>(), roads: string[] = [];
+    for (const p of parts) {
+      if (!p.seg.road || p.seg.kind !== 'motorway') continue;
+      byRoad.set(p.seg.road, (byRoad.get(p.seg.road) ?? 0) + Math.max(0, p.s1 - p.s0));
+      if (roads[roads.length - 1] !== p.seg.road) roads.push(p.seg.road);
+    }
+    const mainRoad = [...byRoad].sort((a, b) => b[1] - a[1])[0]?.[0] ?? start.seg.road;
+    const passThrough = route.trans.filter((t) => t.kind === 'dock').map((t) => t.from.arrStation!).filter(Boolean);
+    const order = (seg: Seg, s: number) => { const i = parts.findIndex((p) => p.seg === seg && s >= p.s0 && s <= p.s1); return i * 1e6 + s; };
+    const cameras = this.cameras.filter((c) => on(c.seg, c.s)).sort((a, b) => order(a.seg, a.s) - order(b.seg, b.s));
+    const facilities = this.services.filter((sv) => on(sv.exit.from, sv.exit.fromS)).sort((a, b) => order(a.exit.from, a.exit.fromS) - order(b.exit.from, b.exit.fromS));
+    const name = passThrough.length ? `Via ${passThrough.map((st) => st.name).join(' and ')}` : mainRoad;
+    return { name, start, route, mainRoad, roads, passThrough, cameras, facilities };
   }
 
   routePoints(r: Pick<Route, 'trans' | 'goal'>, seg: Seg, s: number, step = 80): Pt[] {

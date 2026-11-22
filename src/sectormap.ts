@@ -5,6 +5,7 @@ import type { Pt } from './geom';
 import { SectorView } from './sectorview';
 import { toast } from './state';
 import { sfx } from './audio';
+import { RoutePanel } from './routepanel';
 
 const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const BG = 0x070c22;
@@ -44,9 +45,9 @@ interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number
  * scene only draws it and turns mouse, wheel and touch gestures into pans, zooms and taps.
  *
  * Extension points: `overlays` (extra marks drawn every redraw), `taps` (a tap at a world point), `holds` (a long press
- * or right-click at a world point), `chrome` (a layer drawn at screen scale over the map, for panels and cards) and
- * `redraw()` after anything they show changes. A tap is inspection; the waypoint is set, moved and removed with a hold,
- * so the two never compete for the same gesture.
+ * or right-click at a world point), `chrome` (a layer drawn at screen scale over the map, for panels and cards),
+ * `layouts` (rebuild chrome on open and resize) and `redraw()` after anything they show changes. A tap is inspection;
+ * the waypoint is set, moved and removed with a hold, so the two never compete for the same gesture.
  */
 export class SectorMapScene extends Phaser.Scene {
   world!: WorldScene;
@@ -54,6 +55,8 @@ export class SectorMapScene extends Phaser.Scene {
   overlays: MapOverlay[] = [];
   taps: MapTap[] = [];
   holds: MapTap[] = [];
+  /** called after the map is laid out for the screen (on open and resize), to rebuild chrome panels */
+  layouts: (() => void)[] = [];
   mapCam!: Phaser.Cameras.Scene2D.Camera;
   uiCam!: Phaser.Cameras.Scene2D.Camera;
   mapLayer!: Phaser.GameObjects.Layer;
@@ -113,6 +116,7 @@ export class SectorMapScene extends Phaser.Scene {
     });
     this.holds.push((at, v) => this.waypointAt(at, v));
     this.buildChrome();
+    new RoutePanel(this);
     this.input.addPointer(1);
     this.input.mouse?.disableContextMenu();
     this.input.on('wheel', (ptr: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
@@ -147,6 +151,7 @@ export class SectorMapScene extends Phaser.Scene {
     this.mapCam.setViewport(0, top, W, H - top); this.uiCam.setSize(W, H);
     this.view.resize(W, H, top);
     this.buildChrome();
+    for (const fn of this.layouts) fn();
     this.baseZoom = 0;
     this.redraw();
   }
@@ -263,7 +268,7 @@ export class SectorMapScene extends Phaser.Scene {
     }
   }
 
-  private get u() { return Math.max(0.75, Math.min(1.3, Math.min(this.scale.width / 1280, this.scale.height / 720) * 1.2)); }
+  get u() { return Math.max(0.75, Math.min(1.3, Math.min(this.scale.width / 1280, this.scale.height / 720) * 1.2)); }
   /** the height of the bar along the top; the map is drawn below it */
   get insetTop() { return Math.round(56 * this.u); }
 
@@ -320,6 +325,8 @@ export class SectorMapScene extends Phaser.Scene {
       toast(wp ? 'Waypoint moved' : 'Waypoint set — your route now passes it', '#ff9cec', 2200);
       sfx.click();
     } else toast('Hold on a road to set a waypoint', '#ffd27a', 1800);
+    // a waypoint replaces a picked route, so panels showing it are rebuilt
+    for (const fn of this.layouts) fn();
     this.redraw();
   }
   private removeWaypoint() {
@@ -327,6 +334,7 @@ export class SectorMapScene extends Phaser.Scene {
     this.world.clearWaypoint();
     toast('Waypoint removed', '#ff9cec', 1800);
     sfx.click();
+    for (const fn of this.layouts) fn();
     this.redraw();
   }
   private fireHold(ptr: Phaser.Input.Pointer) {
