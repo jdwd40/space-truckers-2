@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 
-/** Cruise speeds (world units per second) for settings 0..5. */
-export const SPEEDS = [0, 90, 150, 215, 280, 345];
+export { SPEEDS } from './speeds';
 export const KMH = 4.5; // display factor
 
 export const bus = new Phaser.Events.EventEmitter();

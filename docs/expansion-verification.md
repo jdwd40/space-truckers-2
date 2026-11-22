@@ -59,15 +59,15 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 
 ### Milestone 1: corridor and sector map
 
-#### Fuel & Repair facilities (#23)
-
-- Drive Harbor Run eastbound from Harbor Prime with a trailer. The gantry 1.5 km before Harbor Pumps and the side sign at the exit must read "Fuel & Repair" with the pump-and-spanner icon. Ordinary fuel stops must not mention repair.
-- Take the exit. On the entry road the sat-nav must say "Fuel stop · press D for the repair bay". Press D: a toast confirms the repair bay; press A to switch back to the pumps, then D again.
-- The rig must turn off beside the pumps into the hatched bay under the yellow roof and stop at the white line. A quote must appear reading "No damage to repair", total ¢0.
-- Authorise it (button or Enter): control returns, the rig pulls out and merges back onto Harbor Run eastbound beyond the facility, finding a gap in traffic by itself. Repeat with Decline (button or Esc).
-- Repeat at Frost Fuel on Frost Line towards Glacier Outpost, and check the quote at desktop and narrow portrait sizes.
-- Without pressing D, the rig must go to the pumps and refuel as at any fuel stop, then rejoin the same carriageway. Run low on fuel before Harbor Pumps: the sat-nav must guide you to it.
-- Watch AI traffic at both facilities: it uses the pumps, never the repair bay, and merges back in without stopping on the carriageway.
+- Routing by time (#21): from Kestrel Station, take a contract to Terra Nova. The sat-nav must send you along Harbor Run with a pass-through at Harbor Prime, not over M2 and M1 through the central interchange.
+- Routing by time (#21): on a Harbor Prime contract board, compare pay and deadlines with the previous build. Contracts that pass through a station pay slightly less (pay now counts only physical distance), and deadlines stay within a few seconds of before.
+- Fuel & Repair (#23): Drive Harbor Run eastbound from Harbor Prime with a trailer. The gantry 1.5 km before Harbor Pumps and the side sign at the exit must read "Fuel & Repair" with the pump-and-spanner icon. Ordinary fuel stops must not mention repair.
+- Fuel & Repair (#23): Take the exit. On the entry road the sat-nav must say "Fuel stop · press D for the repair bay". Press D: a toast confirms the repair bay; press A to switch back to the pumps, then D again.
+- Fuel & Repair (#23): The rig must turn off beside the pumps into the hatched bay under the yellow roof and stop at the white line. A quote must appear reading "No damage to repair", total ¢0.
+- Fuel & Repair (#23): Authorise it (button or Enter): control returns, the rig pulls out and merges back onto Harbor Run eastbound beyond the facility, finding a gap in traffic by itself. Repeat with Decline (button or Esc).
+- Fuel & Repair (#23): Repeat at Frost Fuel on Frost Line towards Glacier Outpost, and check the quote at desktop and narrow portrait sizes.
+- Fuel & Repair (#23): Without pressing D, the rig must go to the pumps and refuel as at any fuel stop, then rejoin the same carriageway. Run low on fuel before Harbor Pumps: the sat-nav must guide you to it.
+- Fuel & Repair (#23): Watch AI traffic at both facilities: it uses the pumps, never the repair bay, and merges back in without stopping on the carriageway.
 
 ## Scope boundaries
 

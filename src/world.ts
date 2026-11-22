@@ -18,6 +18,8 @@ import { calculateHandling, calculateServiceBrake } from './handling';
 import { advanceCameraOverview, calculateCameraTargets } from './camera';
 
 const STATION_R = 1250;
+/** A contract deadline is the legal travel time of its fastest route, times this slack, plus a grace period in seconds. */
+const DEADLINE_SLACK = 1.25, DEADLINE_GRACE = 45;
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -92,7 +94,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   redAhead = false; limit = 5; blink = 0; routeRedraw = 0; remain = 0; nav: NavInfo | null = null;
   routeDiverted = false;
   private navigationT = 0;
-  costs: Record<string, number> = {};
+  /** The fastest legal route between each pair of stations: its travel time in seconds and physical distance. */
+  trips: Record<string, { time: number; distance: number }> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; works!: Roadworks; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
@@ -383,7 +386,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker.clear();
     const p = this.player;
     if (!p.goal) return;
-    const pts = this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 260);
+    const pts = this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 260);
     if (pts.length < 2) return;
     g.lineStyle(150, 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
     g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
@@ -450,7 +453,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (this.upcomingT > 0) return this.upcomingCache;
     this.upcomingT = 3;
     const p = this.player;
-    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 400) : [];
+    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 400) : [];
     if (!pts.length) for (let s = p.s; s < p.seg.len; s += 400) pts.push(p.seg.path.at(s));
     let d = 0, lx = p.x, ly = p.y;
     this.upcomingCache = null;
@@ -738,16 +741,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private computeCosts() {
     for (const a of this.net.stations) for (const b of this.net.stations) {
       if (a === b) continue;
-      let best = Infinity;
-      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best) best = r.cost; }
-      this.costs[a.id + '>' + b.id] = best;
+      let best = { time: Infinity, distance: Infinity };
+      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best.time) best = { time: r.cost, distance: r.distance }; }
+      this.trips[a.id + '>' + b.id] = best;
     }
   }
   makeJobs(st: Station): Job[] {
     const rank = rankOf(G.earned);
     const first = G.deliveries === 0;
     let others: Station[] = Phaser.Utils.Array.Shuffle(this.net.stations.filter((o) => o !== st));
-    if (first) others = others.sort((a, b) => (this.costs[st.id + '>' + a.id] ?? 0) - (this.costs[st.id + '>' + b.id] ?? 0));
+    if (first) others = others.sort((a, b) => (this.trips[st.id + '>' + a.id]?.time ?? 0) - (this.trips[st.id + '>' + b.id]?.time ?? 0));
     const jobs: Job[] = [];
     for (let i = 0; i < 3; i++) {
       const remote = !first && i === 2 && Math.random() < 0.65;
@@ -755,11 +758,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       if (remote) { from = others[0]; to = pick(this.net.stations.filter((o) => o !== from)); }
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
-      const dist = this.costs[from.id + '>' + to.id] + (remote ? this.costs[st.id + '>' + from.id] : 0);
+      const trip = this.trips[from.id + '>' + to.id], leg = remote ? this.trips[st.id + '>' + from.id] : { time: 0, distance: 0 };
+      const dist = trip.distance + leg.distance, legal = trip.time + leg.time;
       const pay = Math.round(((80 + (dist / 1000) * 15) * CLASSES[cls].mult * (remote ? 1.2 : 1)) / 5) * 5;
       jobs.push({
         id: `${from.id}-${to.id}`, cargo: pick(CARGO[from.id]), from: from.id, to: to.id, cls, pay, dist,
-        stage: from === st ? 'deliver' : 'pickup', target: dist / 225 + 45, elapsed: 0,
+        stage: from === st ? 'deliver' : 'pickup', target: legal * DEADLINE_SLACK + DEADLINE_GRACE, elapsed: 0,
         locked: CLASSES[cls].rank > rank, remote,
       });
     }

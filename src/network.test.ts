@@ -68,7 +68,8 @@ describe('expanded haulage network', () => {
     host.blocks = close(start - 100, start + 100);
     host.veh = [];
     const partial = net.route(host, start, goals, 0, true)!;
-    expect(partial.cost).toBe(baseline + 100 * 40);
+    // a full closure costs 40 times the legal time across it: 100 units here at posted limit 4 (280 units/s)
+    expect(partial.cost).toBeCloseTo(baseline + 40 * 100 / 280, 6);
     host.blocks.push(...host.blocks); // duplicate reports must not multiply a lane's closure.
     expect(net.route(host, start, goals, 0, true)!.cost).toBe(partial.cost);
     host.blocks = [];
@@ -89,7 +90,7 @@ describe('expanded haulage network', () => {
     const route = net.route(host, start, [{ seg: host, s: finish }], 0, true)!;
     expect(route.trans).toEqual([]);
     expect(Number.isFinite(route.cost)).toBe(true);
-    expect(route.cost).toBeGreaterThan(finish - start);
+    expect(route.cost).toBeGreaterThan(net.route(host, start, [{ seg: host, s: finish }])!.cost);
     expect(net.route(host, host.len, [{ seg: host, s: 0 }], 0, true)).toBeNull();
     expect(net.route(host, start, [], 0, true)).toBeNull();
   });
@@ -152,7 +153,7 @@ describe('expanded haulage network', () => {
       expect(normal.trans).toEqual([]);
       const middle = host.path.nearest(0, 0).s;
       host.blocks = Array.from({ length: host.lanes }, (_, lane) => ({ lane, s0: middle - 600, s1: middle + 600, inc: null }));
-      // Distance mode remains the stable source for job prices.
+      // Without live traffic, the legal travel time is unaffected by closures.
       expect(net.route(host, start, goals)!.cost).toBe(normal.cost);
       const diversion = net.route(host, start, goals, 0, true)!;
       expect(diversion.trans.some((t) => t === entry), host.name).toBe(true);
