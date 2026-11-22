@@ -30,10 +30,13 @@ export const DEADLINE: DeadlineRule = { slack: 1.25, startStop: 0, grace: 45 };
 /**
  * A direct contract between the two stations of a corridor (`Network.corridors`): 1.15 times the time a loaded rig takes
  * to drive the fast road at the posted limit, which is its legal time plus START_STOP_TIME for pulling away from the gate
- * and slowing into the dock. A legal run on the fast road beats it; a legal run on the slower route misses it (ADR 0001).
+ * and slowing into the dock, plus INCIDENT_ALLOWANCE for the breakdowns, accidents and roadworks a run meets ahead
+ * (ADR 0001). A legal clear-road run on the fast road beats it comfortably.
  */
 export const START_STOP_TIME = 7;
-export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: 0 };
+/** seconds a corridor deadline allows for incidents and roadworks ahead: rendered legal Polar runs took 159–190 s */
+export const INCIDENT_ALLOWANCE = 40;
+export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: INCIDENT_ALLOWANCE };
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],

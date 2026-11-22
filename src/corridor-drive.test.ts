@@ -89,21 +89,22 @@ describe('driving the Harbor Prime–Glacier Outpost corridor at the posted limi
     expect(scene.player.route.some((t) => t.kind === 'dock')).toBe(false);
   });
 
-  it('beats the deadline with a legal Polar Express run, which sets it at 1.15 times the run, on well under a tank', () => {
+  it('beats the deadline comfortably with a legal clear-road Polar Express run, on well under a tank', () => {
     const run = driveLegally('Polar Express');
     console.log(`legal Polar Express: ${run.seconds.toFixed(1)} s, deadline ${run.job.target.toFixed(1)} s, fuel ${(run.fuelUsed * 100).toFixed(0)}%`);
     expect(run.docked).toBe(run.glacier);
     expect(run.roads).toEqual(['Polar Express']);
     expect(run.pulled).toBe(false);
-    expect(run.job.target / (1.15 * run.seconds)).toBeCloseTo(1, 2);
-    expect(run.seconds).toBeLessThan(run.job.target);
+    // the deadline is 1.15 times this run plus 40 s for incidents ahead, so a clear road leaves about 57 s to spare
+    expect(run.job.target - 1.15 * run.seconds).toBeCloseTo(40, 0);
+    expect(run.seconds).toBeLessThan(run.job.target - 50);
     expect(run.bonus).toBe(Math.round(run.job.pay * 0.2));
     // a full tank covers Polar Express with a trailer: the road has no fuel stop
     expect(run.fuelUsed).toBeGreaterThan(0.3);
     expect(run.fuelUsed).toBeLessThan(0.6);
   }, 30000);
 
-  it('misses the deadline narrowly with a legal run via Kestrel Station, passing through without the job board', () => {
+  it('is slower than Polar Express with a legal run via Kestrel Station, passing through without the job board', () => {
     const run = driveLegally('Harbor Run');
     console.log(`legal Kestrel route: ${run.seconds.toFixed(1)} s, deadline ${run.job.target.toFixed(1)} s, fuel ${(run.fuelUsed * 100).toFixed(0)}%`);
     expect(run.docked).toBe(run.glacier);
@@ -111,8 +112,8 @@ describe('driving the Harbor Prime–Glacier Outpost corridor at the posted limi
     expect(run.pulled).toBe(false);
     // only the delivery at Glacier Outpost opens the board
     expect(run.boards).toBe(1);
-    expect(run.seconds).toBeGreaterThan(run.job.target);
-    expect(run.seconds).toBeLessThan(run.job.target * 1.1);
-    expect(run.bonus).toBe(0);
+    // a legal Polar Express run takes about 114 s (above); on a clear road the Kestrel route still makes the deadline
+    expect(run.seconds).toBeGreaterThan(130);
+    expect(run.seconds).toBeLessThan(run.job.target);
   }, 30000);
 });

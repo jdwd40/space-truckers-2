@@ -73,11 +73,11 @@ describe('route comparison in the headless world', () => {
     expect(cmp.deadline).toBe(job.target);
     expect(cmp.options.map((o) => o.name)).toEqual(['Polar Express', 'Via Kestrel Station']);
     const [polar, kestrel] = cmp.options;
-    // the legal arrival times the corridor deadline was set from: Polar beats it and the Kestrel route misses it
+    // the legal arrival times: Polar is faster, and the deadline allows both an incident ahead
     expect(polar.eta).toBeGreaterThan(110); expect(polar.eta).toBeLessThan(118);
     expect(kestrel.eta).toBeGreaterThan(131); expect(kestrel.eta).toBeLessThan(139);
-    expect(polar.eta).toBeLessThan(cmp.deadline);
-    expect(kestrel.eta).toBeGreaterThan(cmp.deadline);
+    expect(cmp.deadline).toBeCloseTo(171.3, 0);
+    expect(polar.eta).toBeLessThan(cmp.deadline - 50);
     expect([polar.cameras.length, kestrel.cameras.length]).toEqual([2, 1]);
     expect(kestrel.facilities.map((f) => f.name)).toEqual(['Harbor Pumps', 'Frost Fuel']);
     expect(cmp.picked).toBe(-1);

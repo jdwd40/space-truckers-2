@@ -100,8 +100,7 @@ describe('driving between the routes by Kestrel Link', () => {
     expect(run.pulled).toBe(false);
     // the pass-through sends the rig on by itself: only the delivery opens the job board
     expect(run.boards).toBe(1);
-    expect(run.seconds).toBeGreaterThan(POLAR_LEGAL);
-    expect(run.seconds).toBeGreaterThan(w.job.target);
+    expect(run.seconds).toBeGreaterThan(POLAR_LEGAL + 20);
   }, 30000);
 
   it('drives the reverse: Glacier Outpost → Frost Line → Kestrel Station → Kestrel Link → Polar Express → Harbor Prime', () => {
@@ -113,8 +112,7 @@ describe('driving between the routes by Kestrel Link', () => {
     expect(run.docked).toBe(w.to);
     expect(run.pulled).toBe(false);
     expect(run.boards).toBe(1);
-    expect(run.seconds).toBeGreaterThan(POLAR_LEGAL);
-    expect(run.seconds).toBeGreaterThan(w.job.target);
+    expect(run.seconds).toBeGreaterThan(POLAR_LEGAL + 20);
   }, 30000);
 
   it('turns left off Polar Express west onto the link and docks at its gate to deliver to Kestrel Station', () => {

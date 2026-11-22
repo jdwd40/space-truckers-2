@@ -42,14 +42,14 @@ describe('contract pay and deadlines', () => {
     expect(job.pay).toBe(755);
   });
 
-  it('sets the Harbor Prime–Glacier Outpost deadline, both ways, at 1.15 times a legal Polar Express run', () => {
+  it('sets the Harbor Prime–Glacier Outpost deadline, both ways, at 1.15 times a legal Polar Express run plus 40 s for incidents', () => {
     const { contract, legal } = board();
     for (const [from, to] of [['Harbor Prime', 'Glacier Outpost'], ['Glacier Outpost', 'Harbor Prime']]) {
       // pulling away and docking take a loaded rig about 7 s beyond the legal time (measured in corridor-drive.test.ts:
-      // a 114.1 s run on a 107.0 s route), so the deadline is about 131 s
-      expect(contract(from, to).target, `${from} → ${to}`).toBeCloseTo(1.15 * (legal(from, to) + 7), 1);
+      // a 114.1 s run on a 107.0 s route); breakdowns, accidents and roadworks ahead are allowed 40 s on top
+      expect(contract(from, to).target, `${from} → ${to}`).toBeCloseTo(1.15 * (legal(from, to) + 7) + 40, 1);
     }
-    expect(contract('Harbor Prime', 'Glacier Outpost').target).toBeCloseTo(131.3, 0);
+    expect(contract('Harbor Prime', 'Glacier Outpost').target).toBeCloseTo(171.3, 0);
   });
 
   it('keeps every other station pair on a deadline a legal run beats, no tighter than when routing first went by time', () => {
