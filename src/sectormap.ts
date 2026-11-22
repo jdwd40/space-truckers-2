@@ -67,7 +67,7 @@ export class SectorMapScene extends Phaser.Scene {
   private baseZoom = 0;
   // gesture state
   private drag: { id: number; x: number; y: number; moved: number; t: number; held: boolean } | null = null;
-  private holdTimer: Phaser.Time.TimerEvent | null = null;
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
   /** whether the bar was last built with a "clear waypoint" button */
   private barWaypoint = false;
   private pinch: { d: number; x: number; y: number } | null = null;
@@ -278,9 +278,8 @@ export class SectorMapScene extends Phaser.Scene {
     c.add(g);
     const txt = (x: number, y: number, s: string, size: number, color: string, ox = 0) =>
       this.add.text(x, y, s, { fontFamily: FONT, fontSize: `${Math.round(size * u)}px`, fontStyle: 'bold', color }).setOrigin(ox, 0.5).setResolution(Math.min(2, window.devicePixelRatio || 1));
-    c.add(txt(18 * u, h / 2, 'SECTOR MAP', 22, '#ffffff'));
+    const title = txt(18 * u, h / 2, 'SECTOR MAP', 22, '#ffffff'); c.add(title);
     const narrow = W < 640;
-    if (!narrow) c.add(txt(W / 2, h / 2, 'Drag to pan · wheel to zoom · hold or right-click a road for a waypoint · M to close', 14, '#8fa6d8', 0.5));
     const bw = 104 * u, bh = 40 * u, bx = W - bw / 2 - 12 * u, by = h / 2;
     const bg = this.add.graphics();
     bg.fillStyle(0x5a1f28, 0.95); bg.fillRoundedRect(bx - bw / 2, by - bh / 2, bw, bh, 9 * u);
@@ -301,6 +300,14 @@ export class SectorMapScene extends Phaser.Scene {
       const wz = this.add.zone(wx, by, ww, bh).setInteractive();
       wz.on('pointerdown', (_p: unknown, _x: unknown, _y: unknown, ev: Phaser.Types.Input.EventData) => { ev?.stopPropagation?.(); this.removeWaypoint(); });
       c.add(wz);
+    }
+    // the controls hint goes between the title and the buttons, shortened (or left out) to fit
+    if (narrow) return;
+    const x0 = title.x + title.width + 20 * u, x1 = bx - bw / 2 - (this.barWaypoint ? 152 * u : 0) - 20 * u;
+    for (const hint of ['Drag to pan · wheel to zoom · hold or right-click a road for a waypoint · M to close', 'Hold or right-click a road for a waypoint']) {
+      const t = txt((x0 + x1) / 2, h / 2, hint, 14, '#8fa6d8', 0.5);
+      if (t.width <= x1 - x0) { c.add(t); break; }
+      t.destroy();
     }
   }
 
@@ -327,7 +334,7 @@ export class SectorMapScene extends Phaser.Scene {
     const at = this.view.toWorld(ptr.x, ptr.y, this.scale.width, this.scale.height);
     for (const fn of this.holds) fn(at, this.view);
   }
-  private cancelHold() { this.holdTimer?.remove(); this.holdTimer = null; }
+  private cancelHold() { if (this.holdTimer) clearTimeout(this.holdTimer); this.holdTimer = null; }
 
   // ----------------------------------------------------------- gestures
   private onDown(ptr: Phaser.Input.Pointer) {
@@ -340,12 +347,13 @@ export class SectorMapScene extends Phaser.Scene {
       this.pinch = { d: Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y), x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
     } else {
       const dr: NonNullable<SectorMapScene['drag']> = this.drag = { id: ptr.id, x: ptr.x, y: ptr.y, moved: 0, t: this.time.now, held: false };
-      // a press held still is a long press: it fires once, while the finger is still down, and is then no tap
-      this.holdTimer = this.time.delayedCall(HOLD_MS, () => {
+      // a press held still is a long press: it fires once, while the finger is still down, and is then no tap. It is
+      // timed in real time, not game time, so a slow frame rate never makes the press feel longer.
+      this.holdTimer = setTimeout(() => {
         this.holdTimer = null;
         if (this.drag !== dr || dr.moved > 10 || !ptr.isDown) return;
-        dr.held = true; this.fireHold(ptr);
-      });
+        dr.held = true; this.fireHold(ptr); this.redraw();
+      }, HOLD_MS);
     }
   }
   private onMove(ptr: Phaser.Input.Pointer) {

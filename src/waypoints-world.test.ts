@@ -95,6 +95,8 @@ describe('waypoints in the world', () => {
     expect(roadsOn(scene)).toContain('Polar Express');
     expect(roadsOn(scene)).not.toContain('M2');
     expect(routeMiss(scene, b)).toBeLessThan(150);
+    // the pin is on the carriageway the route passes it on
+    expect(routeMiss(scene, scene.waypoint!)).toBeLessThan(25);
     scene.clearWaypoint();
     expect(scene.waypoint).toBeNull();
     expect(roadsOn(scene)).toEqual(normal);

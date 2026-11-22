@@ -760,7 +760,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!goals.length && !wp) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
     // an unreachable waypoint (say, behind a closure) is kept, and the route goes straight to the goal until it is reachable
-    const r = (wp && this.net.routeVia(p.seg, p.s, wp.via, goals, side, true)) || (goals.length ? this.net.route(p.seg, p.s, goals, side, true) : null);
+    const rv = wp && this.net.routeVia(p.seg, p.s, wp.via, goals, side, true);
+    // the pin sits on the carriageway the route passes it on
+    if (wp && rv) { const q = rv.via.seg.path.at(rv.via.s); wp.x = q.x; wp.y = q.y; }
+    const r = rv || (goals.length ? this.net.route(p.seg, p.s, goals, side, true) : null);
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
