@@ -84,6 +84,25 @@ describe('Fuel & Repair in the world', () => {
     expect(step(90, () => fl.f.includes(p.seg) && p.lane >= 0 && p.lane < p.seg.lanes)).toBe(true);
   });
 
+  it('lets traffic use the pumps, never the bay, and merge back while the rig waits in the bay', () => {
+    const w = worldBefore('Harbor Pumps');
+    const { scene, sv, p, step, net } = w;
+    const npc = scene.traffic.add('van', sv.host, sv.exit.fromS - 1400, sv.host.lanes - 1, 200);
+    npc.svcTarget = sv; npc.dest = 'kestrel';
+    scene.traffic.reroute(npc);
+    takeExit(w);
+    scene.laneChange(1);
+    let inBay = false, pumped = false;
+    expect(step(120, () => {
+      if (npc.seg === sv.bay!.seg) inBay = true;
+      if (npc.seg === sv.seg) pumped = true;
+      return scene.pstate === 'repair' && pumped && net.roads.find((r) => r.name === 'Harbor Run')!.f.includes(npc.seg) && npc.s - net.chainStart(npc.seg) > sv.exit.fromS - net.chainStart(sv.host) && npc.lane < npc.seg.lanes;
+    })).toBe(true);
+    expect(inBay).toBe(false);
+    expect(npc.dead).toBe(false);
+    expect(p.seg).toBe(sv.bay!.seg);
+  });
+
   it('sends a rig low on fuel to a Fuel & Repair facility ahead, as to any fuel stop', () => {
     const w = worldBefore('Harbor Pumps');
     const { scene, sv, step } = w;
