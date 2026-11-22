@@ -74,6 +74,12 @@ describe('inspecting a facility on the sector map', () => {
     if (info?.kind === 'facility') expect(info.services).toEqual(['Fuel · 2 pumps']);
   });
 
+  it('picks the road a wide tap lands on over a facility that is only within reach of it', () => {
+    const lb = net.laybys.find((l) => l.seg.road === 'Harbor Run')!;
+    const s = lb.seg.path.nearest(lb.x, lb.y).s, on = lb.seg.path.at(s + 400, 0);
+    expect(net.inspect(on.x, on.y, 550)).toMatchObject({ kind: 'road', road: 'Harbor Run' });
+  });
+
   it('names a lay-by and what it offers, even when the tap lands on the carriageway beside it', () => {
     const lb = net.laybys.find((l) => l.seg.road === 'Polar Express')!;
     const beside = lb.seg.path.at(lb.seg.path.nearest(lb.x, lb.y).s, 0);

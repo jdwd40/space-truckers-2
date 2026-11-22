@@ -40,7 +40,7 @@ export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: num
 /** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
 export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
 /** A road under an inspected point: its carriageway, where that goes, the posted limit there and the carriageway's cameras. */
-export interface RoadInspection { kind: 'road'; road: string; carriageway: string; towards: string | null; limit: number; cameras: Camera[]; x: number; y: number }
+export interface RoadInspection { kind: 'road'; seg: Seg; road: string; carriageway: string; towards: string | null; limit: number; cameras: Camera[]; x: number; y: number }
 /** A facility under an inspected point, by its stable ID, with what a driver can use there. */
 export interface FacilityInspection { kind: 'facility'; id: string; name: string; facility: 'fuel' | 'fuel-repair' | 'layby'; services: string[]; x: number; y: number }
 /**
@@ -791,8 +791,8 @@ export class Network {
   }
 
   /**
-   * What is under a world point, for inspection on the sector map: a lane closure (incident or roadworks), then a
-   * facility, then a road. `radius` is how far from the point to look (a finger's width on the map), in world units.
+   * What is under a world point, for inspection on the sector map: the nearest lane closure (incident or roadworks),
+   * facility or road, preferring them in that order when the point is on more than one. `radius` is how far from the point to look (a finger's width on the map), in world units.
    */
   inspect(x: number, y: number, radius = 0): Inspection | null {
     let hit: { d: number; c: ClosureInspection } | null = null;
@@ -803,11 +803,10 @@ export class Network {
         if (d <= radius && (!hit || d < hit.d)) hit = { d, c };
       }
     }
-    if (hit) return (hit as { c: ClosureInspection }).c;
     let fac: { d: number; info: FacilityInspection } | null = null;
     const near = (fx: number, fy: number, reach: number, info: () => FacilityInspection) => {
-      const d = Math.hypot(fx - x, fy - y);
-      if (d <= reach + radius && (!fac || d < fac.d)) fac = { d, info: info() };
+      const d = Math.max(0, Math.hypot(fx - x, fy - y) - reach);
+      if (d <= radius && (!fac || d < fac.d)) fac = { d, info: info() };
     };
     for (const sv of this.services) near(sv.x, sv.y, FACILITY_REACH, () => ({
       kind: 'facility', id: sv.id, name: sv.name, facility: sv.kind, x: sv.x, y: sv.y,
@@ -816,7 +815,6 @@ export class Network {
     for (const lb of this.laybys) near(lb.x, lb.y, LAYBY_REACH, () => ({
       kind: 'facility', id: lb.id, name: lb.name, facility: 'layby', x: lb.x, y: lb.y, services: ['Lay-by', 'Passengers'],
     }));
-    if (fac) return (fac as { info: FacilityInspection }).info;
     let best: { d: number; level: number; seg: Seg; s: number } | null = null;
     for (const seg of this.segs) {
       if (seg.kind !== 'motorway' && seg.kind !== 'avenue') continue;
@@ -826,10 +824,15 @@ export class Network {
       if (d > radius) continue;
       if (!best || d < best.d - 1 || (d <= best.d + 1 && seg.level > best.level)) best = { d, level: seg.level, seg, s: n.s };
     }
-    if (!best) return null;
-    const { seg, s } = best, chain = this.carriageway(seg), at = seg.path.at(s);
+    // the nearest wins; on a tie (the point is on more than one) a closure, then a facility, is picked over the road
+    const h = hit as { d: number; c: ClosureInspection } | null, f = fac as { d: number; info: FacilityInspection } | null;
+    const b = best as { d: number; seg: Seg; s: number } | null;
+    if (h && (!f || h.d <= f.d) && (!b || h.d <= b.d)) return h.c;
+    if (f && (!b || f.d <= b.d)) return f.info;
+    if (!b) return null;
+    const { seg, s } = b, chain = this.carriageway(seg), at = seg.path.at(s);
     return {
-      kind: 'road', ...this.describeCarriageway(seg), limit: seg.limitAt(s),
+      kind: 'road', seg, ...this.describeCarriageway(seg), limit: seg.limitAt(s),
       cameras: this.cameras.filter((c) => chain.includes(c.seg)), x: at.x, y: at.y,
     };
   }
