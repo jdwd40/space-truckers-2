@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import type { WorldScene } from './world';
-import type { Network, Seg } from './network';
+import type { Network, Road, Seg } from './network';
+import { RoadLabels } from './maplabels';
+import { MapInspector } from './mapinspect';
 import type { Pt } from './geom';
 import { SectorView } from './sectorview';
 import { toast } from './state';
@@ -37,7 +39,7 @@ const HOLD_MS = 550;
 /** how near (in screen pixels) a long press must be to the waypoint to remove it rather than move it */
 const WAYPOINT_HIT_PX = 30;
 
-interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number; minZoom: number; rot: number }
+interface Label { t: Phaser.GameObjects.Text; x: number; y: number; prio: number; minZoom: number; rot: number; road?: Road; idx?: number }
 
 /**
  * The full-screen sector map: vector graphics on its own camera, drawn from the same network geometry as the sat-nav,
@@ -55,6 +57,12 @@ export class SectorMapScene extends Phaser.Scene {
   overlays: MapOverlay[] = [];
   taps: MapTap[] = [];
   holds: MapTap[] = [];
+  /** called with the world point under a mouse moving over the map with no button down (hover inspection) */
+  hovers: MapTap[] = [];
+  /** screen areas of chrome (cards, panels) where a press must not start a pan or a tap on the map */
+  blockers: ((x: number, y: number) => boolean)[] = [];
+  /** tap and hover inspection; add buttons to its card through `inspector.actions` */
+  inspector!: MapInspector;
   /** called after the map is laid out for the screen (on open and resize), to rebuild chrome panels */
   layouts: (() => void)[] = [];
   mapCam!: Phaser.Cameras.Scene2D.Camera;
@@ -65,6 +73,7 @@ export class SectorMapScene extends Phaser.Scene {
   private over!: Phaser.GameObjects.Graphics;
   private arrow!: Phaser.GameObjects.Image;
   private labels: Label[] = [];
+  private roadLabels!: RoadLabels;
   private bar!: Phaser.GameObjects.Container;
   /** the zoom the base map was last tessellated for */
   private baseZoom = 0;
@@ -116,6 +125,13 @@ export class SectorMapScene extends Phaser.Scene {
     });
     this.holds.push((at, v) => this.waypointAt(at, v));
     this.buildChrome();
+    this.inspector = new MapInspector(this);
+    // a tapped road can take the waypoint from its card, as a hold on it would
+    this.inspector.actions.push({
+      label: 'Set waypoint here',
+      when: (_at, info) => info?.kind === 'road',
+      run: (at) => { if (this.view) this.placeWaypoint(at, this.view); },
+    });
     new RoutePanel(this);
     this.input.addPointer(1);
     this.input.mouse?.disableContextMenu();
@@ -139,6 +155,8 @@ export class SectorMapScene extends Phaser.Scene {
   hide() {
     this.scene.setVisible(false); this.input.enabled = false;
     this.drag = null; this.pinch = null; this.cancelHold();
+    // what was picked may be gone (a cleared incident) by the time the map opens again
+    this.inspector.picked = null; this.inspector.hover = null;
     this.world.cameras.main.setVisible(true); this.world.minicam.setVisible(true);
   }
 
@@ -217,20 +235,16 @@ export class SectorMapScene extends Phaser.Scene {
 
   private buildLabels() {
     const net = this.world.net;
+    this.roadLabels = new RoadLabels(net);
     const mk = (s: string, size: number, color: string, stroke: string) => {
       const t = this.add.text(0, 0, s, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: 'bold', color, stroke, strokeThickness: Math.round(size / 4) })
         .setOrigin(0.5).setResolution(Math.min(2, window.devicePixelRatio || 1));
       this.mapLayer.add(t); return t;
     };
     for (const st of net.stations) this.labels.push({ t: mk(st.name, 17, '#ffffff', '#070c22'), x: st.x, y: st.y, prio: 0, minZoom: 0, rot: 0 });
-    for (const rd of net.roads) {
-      // one label at the middle of every road; long roads get two more once they are big enough on screen
-      for (const [f, minZoom] of [[0.5, 0], [0.2, 0.06], [0.8, 0.06]] as const) {
-        const q = rd.c.at(rd.c.len * f);
-        let rot = q.h; if (rot > Math.PI / 2) rot -= Math.PI; else if (rot < -Math.PI / 2) rot += Math.PI;
-        this.labels.push({ t: mk(rd.name, 13, '#cfe0ff', '#0a1128'), x: q.x, y: q.y, prio: 1, minZoom: minZoom * 25000 / rd.c.len, rot });
-      }
-    }
+    // up to three names per road, placed each redraw on stretches clear of other roads (RoadLabels)
+    for (const rd of net.roads) for (let i = 0; i < 3; i++)
+      this.labels.push({ t: mk(rd.name, 13, '#cfe0ff', '#0a1128'), x: 0, y: 0, prio: 1, minZoom: 0, rot: 0, road: rd, idx: i });
     for (const f of mapFeatures(net)) {
       const look = FEATURE_LOOK[f.kind];
       this.labels.push({ t: mk(f.name + look.suffix, 12, look.text, '#0a1128'), x: f.x, y: f.y, prio: 2, minZoom: look.minZoom, rot: 0 });
@@ -242,9 +256,17 @@ export class SectorMapScene extends Phaser.Scene {
     const v = this.view!, W = this.scale.width, H = this.scale.height;
     const taken: { x0: number; y0: number; x1: number; y1: number }[] = [];
     const free = (b: typeof taken[number]) => b.x1 > 0 && b.x0 < W && b.y1 > 0 && b.y0 < H && !taken.some((r) => r.x0 < b.x1 && b.x0 < r.x1 && r.y0 < b.y1 && b.y0 < r.y1);
+    const spots = new Map<Road, ReturnType<RoadLabels['spots']>>();
     for (const L of [...this.labels].sort((a, b) => a.prio - b.prio)) {
       L.t.setVisible(false);
       if (v.zoom < L.minZoom) continue;
+      if (L.road) {
+        let at = spots.get(L.road);
+        if (!at) spots.set(L.road, (at = this.roadLabels.spots(L.road, v.zoom, L.t.width + 8, L.t.height + 4)));
+        const spot = at[L.idx!];
+        if (!spot) continue;
+        L.x = spot.x; L.y = spot.y; L.rot = spot.rot;
+      }
       const s = v.toScreen(L.x, L.y, W, H);
       // the label's screen size (its text is laid out at scale 1) and the axis-aligned box of it rotated, with a little air
       const c = Math.abs(Math.cos(L.rot)), sn = Math.abs(Math.sin(L.rot)), tw = L.t.width + 8, th = L.t.height + 4;
@@ -321,6 +343,11 @@ export class SectorMapScene extends Phaser.Scene {
   private waypointAt(at: Pt, v: SectorView) {
     const wp = this.world.waypoint, px = 1 / v.zoom;
     if (wp && Math.hypot(at.x - wp.x, at.y - wp.y) < WAYPOINT_HIT_PX * px) { this.removeWaypoint(); return; }
+    this.placeWaypoint(at, v);
+  }
+  /** set or move the waypoint to the road at a world point (a hold, or the inspector card's "Set waypoint here") */
+  placeWaypoint(at: Pt, v: SectorView) {
+    const wp = this.world.waypoint, px = 1 / v.zoom;
     if (this.world.setWaypoint(at.x, at.y, Math.max(400, 24 * px))) {
       toast(wp ? 'Waypoint moved' : 'Waypoint set — your route now passes it', '#ff9cec', 2200);
       sfx.click();
@@ -346,7 +373,7 @@ export class SectorMapScene extends Phaser.Scene {
 
   // ----------------------------------------------------------- gestures
   private onDown(ptr: Phaser.Input.Pointer) {
-    if (ptr.y < this.insetTop) return;
+    if (ptr.y < this.insetTop || this.blockers.some((b) => b(ptr.x, ptr.y))) return;
     this.cancelHold();
     if (ptr.rightButtonDown()) { this.drag = null; this.fireHold(ptr); return; }
     const p1 = this.input.pointer1, p2 = this.input.pointer2;
@@ -378,6 +405,11 @@ export class SectorMapScene extends Phaser.Scene {
       this.redraw(); return;
     }
     const dr = this.drag;
+    if (!dr && !ptr.isDown && !ptr.wasTouch && ptr.y >= this.insetTop && !this.blockers.some((b) => b(ptr.x, ptr.y)) && !this.input.hitTestPointer(ptr).length) {
+      const at = v.toWorld(ptr.x, ptr.y, W, H);
+      for (const fn of this.hovers) fn(at, v);
+      return;
+    }
     if (!dr || dr.id !== ptr.id || !ptr.isDown) return;
     v.pan(ptr.x - dr.x, ptr.y - dr.y);
     dr.moved += Math.hypot(ptr.x - dr.x, ptr.y - dr.y); dr.x = ptr.x; dr.y = ptr.y;
