@@ -1,4 +1,5 @@
 import { Path, Pt, Pose, bezier, catmull } from './geom';
+import { SPEEDS } from './speeds';
 
 /** Lane width. Wider lanes give the big rigs room to manoeuvre. */
 export const LW = 32;
@@ -16,7 +17,9 @@ export interface Slot { s: number; occ: unknown }
 export interface Aux { side: 1 | -1; s0: number; s1: number; type: 'exit' | 'merge' | 'layby'; trans?: Trans; slots?: Slot[] }
 export interface Trans {
   id: number; type: 'exit' | 'merge' | 'end'; from: Seg; fromS: number; to: Seg; toS: number; side: 1 | -1;
-  latShift: number; label: string; kind: 'jct' | 'uturn' | 'services' | 'link' | 'dock'; dir: 'L' | 'R' | 'S' | 'U'; aux?: Aux; svc?: Services; pen?: number;
+  latShift: number; label: string; kind: 'jct' | 'uturn' | 'services' | 'link' | 'dock'; dir: 'L' | 'R' | 'S' | 'U'; aux?: Aux; svc?: Services;
+  /** extra seconds the router adds for taking this transition */
+  pen?: number;
 }
 export interface Stop { s: number; kind: 'signal'; sig: Signal; group: number }
 export interface Services { name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[]; waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number }
@@ -26,8 +29,14 @@ export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: Si
 export interface LimitSign { seg: Seg; s: number; limit: number }
 export interface Crossing { x: number; y: number; h: number; sig: Signal; corners: Pt[]; lights: { seg: Seg; s: number; group: number }[] }
 export interface Goal { seg: Seg; s: number }
-export interface Route { trans: Trans[]; goal: Goal; cost: number; diverted?: boolean }
+/** `cost` is the route's travel time in seconds (at the posted limit, plus any delays); `distance` its physical length. */
+export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
 export interface Camera { seg: Seg; s: number; x: number; y: number }
+
+/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the pause and pulling away again. */
+export const PASS_THROUGH_TIME = 12;
+/** Seconds of delay the router expects from each stopped vehicle in a substantial queue. */
+export const JAM_DELAY = 3;
 
 export const GREEN = 0x1d7a4c, BLUE = 0x1f5fb8, POLICE = 0x283a8f;
 
@@ -556,7 +565,7 @@ export class Network {
 
     // turning around by docking at a station (router only — never applied automatically)
     for (const st of this.stations) for (const a of st.arr) for (const d of st.dep) {
-      this.addT({ type: 'end', from: a, fromS: a.len - 150, to: d, toS: 150, side: 1, latShift: 0, label: st.name, kind: 'dock', dir: 'U', pen: 2500 });
+      this.addT({ type: 'end', from: a, fromS: a.len - 150, to: d, toS: 150, side: 1, latShift: 0, label: st.name, kind: 'dock', dir: 'U', pen: PASS_THROUGH_TIME });
     }
     this.computeLimits();
     this.validate();
@@ -599,9 +608,20 @@ export class Network {
 
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
 
-  /** Distance-equivalent cost of the actual traversed interval, not the whole segment. */
+  /** Seconds to drive [s0, s1] of seg at its posted limit. */
+  legalTime(seg: Seg, s0: number, s1: number): number {
+    let t = 0;
+    for (let a = s0; a < s1;) {
+      const b = Math.min(s1, (Math.floor(a / 100) + 1) * 100);
+      t += (b - a) / (SPEEDS[seg.limitAt(a)] || SPEEDS[1]);
+      a = b;
+    }
+    return t;
+  }
+
+  /** Travel time in seconds over the actual traversed interval, not the whole segment, plus live delays when asked. */
   private routingCost(seg: Seg, s0: number, s1: number, avoidTraffic: boolean): number {
-    let cost = Math.max(0, s1 - s0);
+    let cost = this.legalTime(seg, s0, s1);
     if (!avoidTraffic || s1 <= s0) return cost;
     const blocks = seg.blocks.filter((b) => Number.isInteger(b.lane) && b.lane >= 0 && b.lane < seg.lanes && b.s0 < s1 && b.s1 > s0);
     // Sweep clipped block endpoints, counting each closed lane once even for overlapping incidents.
@@ -610,7 +630,7 @@ export class Network {
       const a = points[i - 1], b = points[i];
       const closed = new Set(blocks.filter((block) => block.s0 < b && block.s1 > a).map((block) => block.lane)).size;
       // Finite penalties preserve a last-resort route if no usable alternative exists.
-      cost += (b - a) * (closed === seg.lanes ? 40 : 6 * closed / (seg.lanes - closed));
+      if (closed) cost += this.legalTime(seg, a, b) * (closed === seg.lanes ? 40 : 6 * closed / (seg.lanes - closed));
     }
     // Ignore the player's speed, parked/service/auxiliary traffic, and isolated slow trucks.
     const traffic = seg.veh.filter((v) => !v.dead && !v.isPlayer && v.s >= s0 && v.s < s1 &&
@@ -618,12 +638,12 @@ export class Network {
       ['drive', 'held', 'stopped', 'broken', 'crashed'].includes(v.state));
     const slow = traffic.filter((v) => v.v < v.vDes * 0.45);
     if (slow.length >= Math.max(4, seg.lanes) && slow.length >= traffic.length / 2) {
-      cost += slow.reduce((sum, v) => sum + 800 * (1 - Math.max(0, v.v) / v.vDes), 0);
+      cost += slow.reduce((sum, v) => sum + JAM_DELAY * (1 - Math.max(0, v.v) / v.vDes), 0);
     }
     return cost;
   }
 
-  /** Opt in to live congestion costs; leave false for geometric job distances/prices. */
+  /** Fastest route by travel time at the posted limit. Opt in to live congestion costs; leave false for legal travel times. */
   route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false): Route | null {
     const cost = (road: Seg, from: number, to: number) => this.routingCost(road, from, to, avoidTraffic);
     let best = Infinity, bestT: Trans | null = null, bestG: Goal | null = null, direct = false;
@@ -652,10 +672,13 @@ export class Network {
     const list: Trans[] = [];
     if (!direct) { let t: Trans | null = bestT; while (t) { list.unshift(t); t = prev.get(t) ?? null; } }
     const diverted = seg.road.includes('Bypass') || list.some((t) => t.label.includes('Bypass') || t.to.road.includes('Bypass'));
-    return { trans: list, goal: bestG, cost: best, diverted };
+    let distance = 0, at = s;
+    for (const t of list) { distance += t.fromS - at; at = t.toS; }
+    distance += bestG.s - at;
+    return { trans: list, goal: bestG, cost: best, distance, diverted };
   }
 
-  routePoints(r: Route, seg: Seg, s: number, step = 80): Pt[] {
+  routePoints(r: Pick<Route, 'trans' | 'goal'>, seg: Seg, s: number, step = 80): Pt[] {
     const pts: Pt[] = [];
     let cs = seg, ss = s;
     for (const t of r.trans) {

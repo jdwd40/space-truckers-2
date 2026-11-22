@@ -57,6 +57,11 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Stay in a closed lane: your rig must stop at the barrier and pressing A or D must take you out, including from the far lane of a two-lane closure.
 - Watch traffic slow on the approach, leave the closed lanes, zip in at the barrier when busy, and pick up speed after the works.
 
+### Milestone 1: corridor and sector map
+
+- Routing by time (#21): from Kestrel Station, take a contract to Terra Nova. The sat-nav must send you along Harbor Run with a pass-through at Harbor Prime, not over M2 and M1 through the central interchange.
+- Routing by time (#21): on a Harbor Prime contract board, compare pay and deadlines with the previous build. Contracts that pass through a station pay slightly less (pay now counts only physical distance), and deadlines stay within a few seconds of before.
+
 ## Scope boundaries
 
 Roadworks are placed once when the world is built and stay for the session. Sites sit wholly inside one road section, clear of joins, lane tapers, slip roads, signals and stations.
