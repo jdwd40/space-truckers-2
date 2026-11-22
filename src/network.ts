@@ -22,8 +22,14 @@ export interface Trans {
   pen?: number;
 }
 export interface Stop { s: number; kind: 'signal'; sig: Signal; group: number }
-export interface Services { name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[]; waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number }
-export interface Layby { seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
+/** A roadside fuel stop. A 'fuel-repair' facility also has a repair bay behind the same exit. `id` is stable across builds. */
+export interface Services {
+  id: string; kind: 'fuel' | 'fuel-repair'; name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[];
+  waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number; bay: RepairBay | null;
+}
+/** The stopping place in a Fuel & Repair facility where a driver is quoted for work on their vehicle. */
+export interface RepairBay { id: string; facility: Services; seg: Seg; stopS: number; x: number; y: number; h: number }
+export interface Layby { id: string; seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
 export interface SignPanel { side: 'L' | 'C' | 'R'; color: number; title: string; sub?: string; arrow: number | 'U' | null; icon?: string }
 export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: SignPanel[]; side: 1 | -1 }
 export interface LimitSign { seg: Seg; s: number; limit: number }
@@ -35,6 +41,8 @@ export interface Camera { seg: Seg; s: number; x: number; y: number }
 
 /** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the pause and pulling away again. */
 export const PASS_THROUGH_TIME = 12;
+/** seconds the router adds for turning into a repair bay, so it only routes through one when the bay is the goal */
+export const REPAIR_BAY_TIME = 60;
 /** Seconds of delay the router expects from each stopped vehicle in a substantial queue. */
 export const JAM_DELAY = 3;
 
@@ -76,6 +84,7 @@ export class Seg {
   freeLat = false;
   laneW = LW;
   svc: Services | null = null;
+  bay: RepairBay | null = null;
   limits: Int8Array = new Int8Array(1);
   road = '';
   /** closed lanes; `warn` is how far before s0 a signed closure already counts as closed, for merging and spawning */
@@ -118,6 +127,8 @@ export class Seg {
   }
 }
 
+/** a lower-case, hyphenated form of a name, for stable IDs */
+export const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const dirv = (h: number) => ({ x: Math.cos(h), y: Math.sin(h) });
 
 export class Network {
@@ -269,7 +280,11 @@ export class Network {
     this.signs.push({ seg: a, s: sA + 60, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: 'Turn back', sub: label, arrow: 'U' }] });
     return { r, t };
   }
-  private servicesAt(host: Seg, s0: number, pumps: number, name: string) {
+  /**
+   * A fuel stop on the outer side of host: exit at s0, an entry road to the pumps, an exit road merging back. With
+   * `repair` the entry also forks to a repair bay beside the pumps, which merges back onto host after the pumps do.
+   */
+  private servicesAt(host: Seg, s0: number, pumps: number, name: string, repair = false) {
     const laneW = 30, W = pumps * laneW;
     const latC = host.laneLat(host.lanes) + LW / 2 + 80 + W / 2;
     const a = s0 + 330, b = a + 340;
@@ -297,13 +312,39 @@ export class Network {
     exitR.endT = this.addT({ type: 'merge', from: exitR, fromS: exitR.len, to: host, toS: m, side: 1, latShift: 0, label: host.road, kind: 'link', dir: 'S', aux: am });
     am.trans = exitR.endT;
     const mid = host.path.at((a + b) / 2, latC);
-    const svc: Services = { name, size: pumps, host, seg: ps, pumps: [], waitS: 26, pumpS: 205, exit: te, x: mid.x, y: mid.y, h: hP };
+    const id = `services:${slug(name)}`;
+    const svc: Services = { id, kind: repair ? 'fuel-repair' : 'fuel', name, size: pumps, host, seg: ps, pumps: [], waitS: 26, pumpS: 205, exit: te, x: mid.x, y: mid.y, h: hP, bay: null };
     for (let i = 0; i < pumps; i++) svc.pumps.push({ lane: i, occ: null });
     ps.svc = svc; te.svc = svc;
     this.services.push(svc);
+    if (repair) {
+      // the bay runs beside the pumps on the far side, then has its own road back, merging after the pumps' merge
+      const latB = latC + W / 2 + 52, ba = a + 150, bb = b + 100;
+      const q0 = host.path.at(ba, latB), q1 = host.path.at(bb, latB);
+      const dIn = Math.hypot(q0.x - pa.x, q0.y - pa.y) * 0.42;
+      const inPts = bezier(pa, { x: pa.x + Math.cos(hP) * dIn, y: pa.y + Math.sin(hP) * dIn }, { x: q0.x - Math.cos(hP) * dIn, y: q0.y - Math.sin(hP) * dIn }, q0, 30);
+      const bay = this.seg(name + ' repair bay', new Path([...inPts, q1]), 1, 'services', 0, 1);
+      bay.laneW = 34; bay.road = name;
+      const fork = this.addT({ type: 'end', from: entry, fromS: entry.len, to: bay, toS: 0, side: 1, latShift: 0, label: `${name} repair bay`, kind: 'link', dir: 'S', pen: REPAIR_BAY_TIME });
+      fork.svc = svc;
+      const m2 = m + 900;
+      const p4 = this.auxPt(host, m2, 1);
+      const d3 = Math.hypot(p4.x - q1.x, p4.y - q1.y) * 0.42;
+      const bayOut = this.seg(name + ' repair out', new Path(bezier(q1, { x: q1.x + Math.cos(hP) * d3, y: q1.y + Math.sin(hP) * d3 }, { x: p4.x - Math.cos(p4.h) * d3, y: p4.y - Math.sin(p4.h) * d3 }, p4, 60)), 1, 'ramp', 0, 3);
+      bayOut.road = name;
+      bay.endT = this.addT({ type: 'end', from: bay, fromS: bay.len, to: bayOut, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
+      const am2: Aux = { side: 1, s0: m2, s1: m2 + 560, type: 'merge' };
+      host.aux.push(am2);
+      bayOut.endT = this.addT({ type: 'merge', from: bayOut, fromS: bayOut.len, to: host, toS: m2, side: 1, latShift: 0, label: host.road, kind: 'link', dir: 'S', aux: am2 });
+      am2.trans = bayOut.endT;
+      const stopS = bay.len - 60, sp = bay.path.at(stopS);
+      svc.bay = { id: `${id}:bay`, facility: svc, seg: bay, stopS, x: sp.x, y: sp.y, h: sp.h };
+      bay.bay = svc.bay;
+    }
     const big = pumps > 2;
-    this.signs.push({ ...this.place(host, s0 - 1500), kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title: big ? 'Fuel & services' : 'Fuel stop', sub: `${name}  1 km`, arrow: 45, icon: 'fuel' }] });
-    this.signs.push({ seg: host, s: s0 + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Fuel', sub: name, arrow: 45, icon: 'fuel' }] });
+    const title = repair ? 'Fuel & Repair' : big ? 'Fuel & services' : 'Fuel stop';
+    this.signs.push({ ...this.place(host, s0 - 1500), kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title, sub: `${name}  1 km`, arrow: 45, icon: repair ? 'repair' : 'fuel' }] });
+    this.signs.push({ seg: host, s: s0 + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: repair ? 'Fuel & Repair' : 'Fuel', sub: name, arrow: 45, icon: repair ? 'repair' : 'fuel' }] });
     return svc;
   }
   private laybyAt(seg: Seg, s0: number) {
@@ -315,9 +356,10 @@ export class Network {
     seg.aux.push(aux);
     const p = seg.path.at(s0 + 270, seg.laneLat(seg.lanes));
     const name = `${seg.road} lay-by ${this.laybys.filter((l) => l.seg.road === seg.road).length + 1}`;
+    const id = `layby:${slug(name.replace(' lay-by', ''))}`;
     // a few hitch-hikers wait at most lay-bys; more drift in over time after a pickup
     const waiting = Math.random() < 0.25 ? 0 : 1 + Math.floor(Math.random() * 3);
-    this.laybys.push({ seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
+    this.laybys.push({ id, seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
     this.signs.push({ ...this.place(seg, s0 - 500), kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
   }
   private crossing(r: Road, x: number, y: number, name: string) {
@@ -447,7 +489,7 @@ export class Network {
     this.crossing(M2, 900, -12400, 'Dockside Avenue');
 
     // services, lay-bys, U-turns, speed checks (distances are along the whole carriageway)
-    const svc = (segs: Seg[], s: number, pumps: number, name: string) => { const l = this.locate(segs, s); this.servicesAt(l.seg, l.s, pumps, name); };
+    const svc = (segs: Seg[], s: number, pumps: number, name: string, repair = false) => { const l = this.locate(segs, s); this.servicesAt(l.seg, l.s, pumps, name, repair); };
     const lay = (segs: Seg[], s: number) => { const l = this.locate(segs, s); this.laybyAt(l.seg, l.s); };
     const utn = (segs: Seg[], s: number, back: Seg[], label: string) => { const l = this.locate(segs, s); this.uturn(l.seg, l.s, back, label); };
     const cam = (segs: Seg[], s: number) => {
@@ -493,14 +535,15 @@ export class Network {
     lay(OR.r, 17000);
     svc(OR.r, 12000, 2, 'Quarry Fuel');
 
-    const furnish = (rd: Road, from: Station, to: Station, names: [string, string], pumps: [number, number]) => {
+    /** `repairAt`: the forward facility is a Fuel & Repair, with its exit at this fraction of the road (it is longer) */
+    const furnish = (rd: Road, from: Station, to: Station, names: [string, string], pumps: [number, number], repairAt?: number) => {
       const L = rd.fLen;
       const q = (x: number) => Math.round((L * x) / 100) * 100;
       utn(rd.f, q(0.82), rd.r, from.name);
       utn(rd.r, q(0.82), rd.f, to.name);
       lay(rd.f, q(0.1));
       lay(rd.f, q(0.25));
-      svc(rd.f, q(0.45), pumps[0], names[0]);
+      svc(rd.f, q(repairAt ?? 0.45), pumps[0], names[0], repairAt !== undefined);
       lay(rd.r, q(0.12));
       lay(rd.r, q(0.32));
       svc(rd.r, q(0.6), pumps[1], names[1]);
@@ -509,8 +552,8 @@ export class Network {
       cam(rd.r, q(0.5));
     };
     furnish(AU, terra, harbor, ['Aurora Fuel', 'Skyline Stop'], [3, 2]);
-    furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3]);
-    furnish(FL, kestrel, glacier, ['Frost Fuel', 'Icicle Stop'], [2, 2]);
+    furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3], 0.39);
+    furnish(FL, kestrel, glacier, ['Frost Fuel', 'Icicle Stop'], [2, 2], 0.38);
     furnish(IR, glacier, jove, ['Glacier Pumps', 'Sleet Stop'], [2, 2]);
     furnish(SH, vesta, ember, ['Slag Services', 'Furnace Fuel'], [3, 3]);
     furnish(CR, ember, terra, ['Cinder Stop', 'Ashfall Fuel'], [2, 2]);
@@ -604,6 +647,12 @@ export class Network {
       for (const a of seg.aux) if (a.s0 < lo + 60 || a.s1 > hi - 60) console.warn('aux crosses section join', seg.name, a.type, a.s0 | 0, a.s1 | 0, seg.len | 0);
       for (const st of seg.stops) if (st.s < lo + 300 || st.s > hi - 300) console.warn('signal near section join', seg.name, st.s | 0, seg.len | 0);
     }
+  }
+
+  /** the facility (services, Fuel & Repair, repair bay or lay-by) with this stable ID */
+  facility(id: string): Services | RepairBay | Layby | undefined {
+    for (const sv of this.services) { if (sv.id === id) return sv; if (sv.bay?.id === id) return sv.bay; }
+    return this.laybys.find((l) => l.id === id);
   }
 
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
