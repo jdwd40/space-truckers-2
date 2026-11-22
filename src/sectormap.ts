@@ -14,13 +14,14 @@ const BG = 0x070c22;
 /** from this zoom (screen px per world unit) lanes are wide enough to draw lane lines */
 const LANES_ZOOM = 0.18;
 
-/** a facility the sector map marks and labels, by its stable network id; Police HQ joins these when it is built */
-export interface MapFeature { id: string; kind: 'fuel' | 'fuel-repair' | 'layby'; name: string; x: number; y: number }
+/** a facility the sector map marks and labels, by its stable network id */
+export interface MapFeature { id: string; kind: 'fuel' | 'fuel-repair' | 'layby' | 'police-hq'; name: string; x: number; y: number }
 /** the facilities the sector map shows, from the network */
 export function mapFeatures(net: Network): MapFeature[] {
   return [
     ...net.services.map((sv) => ({ id: sv.id, kind: sv.kind, name: sv.name, x: sv.x, y: sv.y })),
     ...net.laybys.map((lb) => ({ id: lb.id, kind: 'layby' as const, name: lb.name, x: lb.x, y: lb.y })),
+    ...net.policeHQs.map((h) => ({ id: h.id, kind: h.kind, name: h.name, x: h.x, y: h.y })),
   ];
 }
 /** marker and label colours by facility kind */
@@ -28,6 +29,7 @@ const FEATURE_LOOK: Record<MapFeature['kind'], { fill: number; text: string; r: 
   fuel: { fill: 0x2f7de1, text: '#9fd0ff', r: 160, minZoom: 0.05, suffix: '' },
   'fuel-repair': { fill: 0xe08a2f, text: '#ffd09a', r: 180, minZoom: 0.035, suffix: ' · Fuel & Repair' },
   layby: { fill: 0x3c9a6a, text: '#a8e6c4', r: 90, minZoom: 0.12, suffix: '' },
+  'police-hq': { fill: 0x3a5bd8, text: '#b8c8ff', r: 110, minZoom: 0.03, suffix: '' },
 };
 
 /** draws extra world-space marks over the base map each redraw (route, waypoint, compared routes); `px` is one screen pixel in world units */

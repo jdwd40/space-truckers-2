@@ -29,6 +29,12 @@ export interface Services {
 }
 /** The stopping place in a Fuel & Repair facility where a driver is quoted for work on their vehicle. */
 export interface RepairBay { id: string; facility: Services; seg: Seg; stopS: number; x: number; y: number; h: number }
+/**
+ * Police HQ: a facility on a dead-end spur. Its `yard` is a turning loop that every way in leads to and every way out
+ * leaves from; `stopS` is where a rig pulls up outside the building. `id` is stable across builds. Its roads (`segs`)
+ * are never used as a through route.
+ */
+export interface PoliceHQ { id: string; kind: 'police-hq'; name: string; yard: Seg; stopS: number; segs: Seg[]; x: number; y: number; h: number }
 export interface Layby { id: string; seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
 export interface SignPanel { side: 'L' | 'C' | 'R'; color: number; title: string; sub?: string; arrow: number | 'U' | null; icon?: string }
 export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: SignPanel[]; side: 1 | -1 }
@@ -44,7 +50,7 @@ export interface Camera { id: string; seg: Seg; s: number; x: number; y: number 
 /** A road under an inspected point: its carriageway, where that goes, the posted limit there and the carriageway's cameras. */
 export interface RoadInspection { kind: 'road'; seg: Seg; road: string; carriageway: string; towards: string | null; limit: number; cameras: Camera[]; x: number; y: number }
 /** A facility under an inspected point, by its stable ID, with what a driver can use there. */
-export interface FacilityInspection { kind: 'facility'; id: string; name: string; facility: 'fuel' | 'fuel-repair' | 'layby'; services: string[]; x: number; y: number }
+export interface FacilityInspection { kind: 'facility'; id: string; name: string; facility: 'fuel' | 'fuel-repair' | 'layby' | 'police-hq'; services: string[]; x: number; y: number }
 /**
  * Lanes closed by roadworks or an incident: the carriageway, which lanes (0 is the left lane) are closed and open, and
  * a line saying so. (x, y) is its middle, for a marker; `extent` the closed stretch of each section it covers.
@@ -71,7 +77,7 @@ export function closedLanesText(closed: number[], lanes: number): string {
   return `Lane${n === 1 ? '' : 's'} ${closed.map((l) => l + 1).join(', ')} of ${lanes} closed`;
 }
 /** how close to a fuel stop's or a lay-by's middle an inspected point counts as on it */
-const FACILITY_REACH = 260, LAYBY_REACH = 150;
+const FACILITY_REACH = 260, LAYBY_REACH = 150, HQ_REACH = 300;
 /** A pair of stations joined by more than one genuinely different route; `fast` is the road of the faster legal route (ADR 0001). */
 export interface Corridor { stations: [string, string]; fast: string }
 /** an axis-aligned world rectangle */
@@ -136,6 +142,8 @@ export class Seg {
   laneW = LW;
   svc: Services | null = null;
   bay: RepairBay | null = null;
+  /** the Police HQ this road belongs to (its ramps and yard) */
+  hq: PoliceHQ | null = null;
   limits: Int8Array = new Int8Array(1);
   road = '';
   /** closed lanes; `warn` is how far before s0 a signed closure already counts as closed, for merging and spawning */
@@ -191,6 +199,7 @@ export class Network {
   signals: Signal[] = [];
   services: Services[] = [];
   laybys: Layby[] = [];
+  policeHQs: PoliceHQ[] = [];
   signs: Sign[] = [];
   limitSigns: LimitSign[] = [];
   crossings: Crossing[] = [];
@@ -545,6 +554,79 @@ export class Network {
     this.signs.push({ seg: toEast, s: 120, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: glacier.name, arrow: 45 }] });
   }
 
+  /** a slip road leaving `from` at s on `side`, with an exit lane `decel` long before it */
+  private exitTo(from: Seg, s: number, side: 1 | -1, decel: number, to: Seg, label: string, kind: Trans['kind']): Trans {
+    const ax: Aux = { side, s0: s - decel, s1: s, type: 'exit' };
+    from.aux.push(ax);
+    return (ax.trans = this.addT({ type: 'exit', from, fromS: s, to, toS: 0, side, latShift: 0, label, kind, dir: side > 0 ? 'R' : 'L', aux: ax }));
+  }
+  /** the end of slip road `from` merging onto `to` at s on `side`, with a merge lane `accel` long */
+  private mergeOnto(from: Seg, to: Seg, s: number, side: 1 | -1, accel: number): Trans {
+    const am: Aux = { side, s0: s, s1: s + accel, type: 'merge' };
+    to.aux.push(am);
+    return (from.endT = am.trans = this.addT({ type: 'merge', from, fromS: from.len, to, toS: s, side, latShift: 0, label: to.road, kind: 'link', dir: 'S', aux: am }));
+  }
+
+  /**
+   * Police HQ, on a short dead-end spur west of Kestrel Link. The link's southbound carriageway turns right into it; the
+   * northbound one turns left into it on a flyover over the southbound carriageway. Both lead into a turning loop round
+   * the HQ building, which leaves by a level slip road merging onto the southbound carriageway (towards Kestrel Station)
+   * or by a flyover over both carriageways merging onto the northbound one (towards Polar Express).
+   *
+   * Everything sits clear of the link's own furniture: the northbound left turn's exit lane (s 740–1240) and the lane
+   * drop in its last 600 m, the southbound left merge (s 700–1260) and the lane gain in its first 600 m.
+   */
+  private policeHQ(kestrel: Station) {
+    const link = this.roads.find((r) => r.name === 'Kestrel Link')!;
+    const north = link.f[0], south = link.r[0];
+    const name = 'Police HQ', id = `hq:${kestrel.id}`;
+    // the yard: in along the north side of the spur, round a turning loop at its west end, and back out along the south
+    const yard = this.seg(name, new Path(catmull([{ x: 470, y: -17800 }, { x: 250, y: -17800 }, { x: 30, y: -17815 }, { x: -130, y: -17750 }, { x: 30, y: -17685 }, { x: 250, y: -17700 }, { x: 470, y: -17700 }], 16)), 1, 'services', 0, 2);
+    yard.road = name;
+    const yIn = yard.path.at(0), stopS = yard.len / 2, mid = yard.path.at(stopS);
+    const h: PoliceHQ = { id, kind: 'police-hq', name, yard, stopS, segs: [yard], x: mid.x, y: mid.y, h: mid.h };
+    this.policeHQs.push(h);
+    // southbound: turn right into the spur
+    const xS = 960;
+    const fromSouth = this.slip(`${link.name} ramp ${name} south`, this.auxPt(south, xS, 1), 160, yIn, 200, 2);
+    this.exitTo(south, xS, 1, 280, fromSouth, name, 'services');
+    // northbound: turn left over the southbound carriageway
+    const xN = 660;
+    const fromNorth = this.slip(`${link.name} ramp ${name} north`, this.auxPt(north, xN, -1), 260, yIn, 260, 2);
+    fromNorth.level = 2;
+    this.exitTo(north, xN, -1, 300, fromNorth, name, 'services');
+    for (const r of [fromSouth, fromNorth]) {
+      r.road = name;
+      r.endT = this.addT({ type: 'end', from: r, fromS: r.len, to: yard, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
+      h.segs.push(r);
+    }
+    // out of the loop: towards Polar Express on a flyover over both carriageways, or level towards Kestrel Station
+    const yOut = yard.path.at(yard.len);
+    const toPolar = this.slip(`${name} ramp ${link.name} north`, yOut, 330, this.auxPt(north, 1000, 1), 330, 2);
+    toPolar.level = 3;
+    this.mergeOnto(toPolar, north, 1000, 1, 240);
+    const toKestrel = this.slip(`${name} ramp ${kestrel.name}`, yOut, 200, this.auxPt(south, 1400, 1), 200, 2);
+    this.mergeOnto(toKestrel, south, 1400, 1, 300);
+    yard.endT = this.addT({ type: 'end', from: yard, fromS: yard.len, to: toPolar, toS: 0, side: 1, latShift: 0, label: 'Polar Express', kind: 'link', dir: 'S' });
+    this.addT({ type: 'end', from: yard, fromS: yard.len, to: toKestrel, toS: 0, side: 1, latShift: 0, label: kestrel.name, kind: 'link', dir: 'S' });
+    for (const r of [toPolar, toKestrel]) { r.road = name; h.segs.push(r); }
+    for (const seg of h.segs) seg.hq = h;
+
+    // signs: on each carriageway ahead of the turn and at it, and the two ways out at the end of the loop
+    this.signs.push({ seg: south, s: xS - 600, kind: 'gantry', side: 1, panels: [
+      { side: 'C', color: GREEN, title: kestrel.name, sub: 'Straight on', arrow: 0 },
+      { side: 'R', color: POLICE, title: name, sub: `Exit right  ${dist(600)}`, arrow: 45, icon: 'police' },
+    ] });
+    this.signs.push({ seg: south, s: xS + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: name, arrow: 45 }] });
+    this.signs.push({ seg: north, s: xN - 450, kind: 'side', side: -1, panels: [{ side: 'L', color: POLICE, title: name, sub: `Exit left  ${dist(450)}`, arrow: -45 }] });
+    // just before the gore, as the flyover passes over the gore itself
+    this.signs.push({ seg: north, s: xN - 60, kind: 'side', side: -1, panels: [{ side: 'L', color: POLICE, title: name, arrow: -45 }] });
+    this.signs.push({ seg: yard, s: yard.len - 160, kind: 'gantry', side: 1, panels: [
+      { side: 'L', color: GREEN, title: 'Polar Express', sub: `${link.name} north`, arrow: -45 },
+      { side: 'R', color: GREEN, title: kestrel.name, sub: `${link.name} south`, arrow: 45 },
+    ] });
+  }
+
   private build() {
     const terra = this.station('terra', 'Terra Nova', 'Garden planet', -16000, 1500, 0x4ad991);
     const kestrel = this.station('kestrel', 'Kestrel Station', 'Starbase', 900, -16000, 0x7fc2ff);
@@ -706,6 +788,7 @@ export class Network {
     lay(polar.f, pq(polar.f, 0.2)); cam(polar.f, pq(polar.f, 0.3)); lay(polar.f, pq(polar.f, 0.7)); cam(polar.f, pq(polar.f, 0.8));
     lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
     this.kestrelLink(kestrel, polar, harbor, glacier);
+    this.policeHQ(kestrel);
     this.corridors.push({ stations: [harbor.id, glacier.id], fast: polar.name });
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
@@ -799,9 +882,9 @@ export class Network {
   }
 
   /** the facility (services, Fuel & Repair, repair bay or lay-by) with this stable ID */
-  facility(id: string): Services | RepairBay | Layby | undefined {
+  facility(id: string): Services | RepairBay | Layby | PoliceHQ | undefined {
     for (const sv of this.services) { if (sv.id === id) return sv; if (sv.bay?.id === id) return sv.bay; }
-    return this.laybys.find((l) => l.id === id);
+    return this.laybys.find((l) => l.id === id) ?? this.policeHQs.find((h) => h.id === id);
   }
 
   /** every section of seg's carriageway, from its start */
@@ -898,6 +981,10 @@ export class Network {
       kind: 'facility', id: sv.id, name: sv.name, facility: sv.kind, x: sv.x, y: sv.y,
       services: [`Fuel · ${sv.size} pump${sv.size === 1 ? '' : 's'}`, ...(sv.bay ? ['Repair bay'] : [])],
     }));
+    for (const h of this.policeHQs) near(h.x, h.y, HQ_REACH, () => ({
+      kind: 'facility', id: h.id, name: h.name, facility: h.kind, x: h.x, y: h.y,
+      services: ['Open to all drivers', 'Leave towards Polar Express or Kestrel Station'],
+    }));
     for (const lb of this.laybys) near(lb.x, lb.y, LAYBY_REACH, () => ({
       kind: 'facility', id: lb.id, name: lb.name, facility: 'layby', x: lb.x, y: lb.y, services: ['Lay-by', 'Passengers'],
     }));
@@ -965,10 +1052,15 @@ export class Network {
     return cost;
   }
 
-  /** Fastest route by travel time at the posted limit. Opt in to live congestion costs; leave false for legal travel times. */
+  /**
+   * Fastest route by travel time at the posted limit. Opt in to live congestion costs; leave false for legal travel times.
+   * It never passes through Police HQ: it only drives into HQ when HQ is one of the goals.
+   */
   route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): Route | null {
     /** `avoid`: roads the route may not drive on (it fails if it starts on one) */
-    const banned = (t: Trans) => !!avoid?.has(t.to.road);
+    // Police HQ is never a through route: its roads are only driven into when it is a goal (or the route starts there)
+    const toHQ = goals.some((g) => g.seg.hq);
+    const banned = (t: Trans) => !!avoid?.has(t.to.road) || (!!t.to.hq && !t.from.hq && !toHQ);
     if (avoid?.has(seg.road)) return null;
     const cost = (road: Seg, from: number, to: number) => this.routingCost(road, from, to, avoidTraffic);
     let best = Infinity, bestT: Trans | null = null, bestG: Goal | null = null, direct = false;
@@ -1006,12 +1098,13 @@ export class Network {
   /**
    * The places a waypoint at a map point (x, y) can mean: the nearest point on each carriageway section within `radius`
    * (both directions of a road, so a route may reach it either way), dropping any much further than the closest one so a
-   * waypoint on a road does not also mean a slip road beside it. Facilities (services and repair bays) are not waypoints.
+   * waypoint on a road does not also mean a slip road beside it. Facilities (services, repair bays and Police HQ with
+   * its slip roads) are not waypoints.
    */
   waypointGoals(x: number, y: number, radius = 400): Goal[] {
     const near: { g: Goal; d: number }[] = [];
     for (const seg of this.segs) {
-      if (seg.kind === 'services' || seg.path.maxX < x - radius || seg.path.minX > x + radius || seg.path.maxY < y - radius || seg.path.minY > y + radius) continue;
+      if (seg.kind === 'services' || seg.hq || seg.path.maxX < x - radius || seg.path.minX > x + radius || seg.path.maxY < y - radius || seg.path.minY > y + radius) continue;
       const n = seg.path.nearest(x, y);
       if (n.d <= radius) near.push({ g: { seg, s: n.s }, d: n.d });
     }

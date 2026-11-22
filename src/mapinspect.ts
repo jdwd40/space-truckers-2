@@ -27,7 +27,7 @@ export function describe(info: Inspection): { title: string; sub: string; lines:
     };
   }
   if (info.kind === 'facility') {
-    const what = info.facility === 'fuel-repair' ? 'Fuel & Repair' : info.facility === 'fuel' ? 'Fuel stop' : 'Lay-by';
+    const what = info.facility === 'fuel-repair' ? 'Fuel & Repair' : info.facility === 'fuel' ? 'Fuel stop' : info.facility === 'police-hq' ? 'Off Kestrel Link' : 'Lay-by';
     return { title: info.name, sub: what, lines: info.services };
   }
   const where = `${info.carriageway}${info.towards ? ` towards ${info.towards}` : ''}`;
