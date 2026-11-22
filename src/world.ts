@@ -776,7 +776,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** whether the sat-nav is leading to the contract's next station (not a fuel stop or repair bay) */
   private jobBound() { return !!G.job && !this.fuelTarget && !this.repairTarget?.bay; }
   /** the station the contract needs next */
-  private jobStation(): Station | null { return G.job ? this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to] : null; }
+  jobStation(): Station | null { return G.job ? this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to] : null; }
   /** the rig is still waiting at a station gate it has just been put on, so a comparison may leave by any departure */
   private atGate(): Station | null {
     const p = this.player, st = p.seg.depStation;
