@@ -45,16 +45,38 @@ describe('expanded haulage network', () => {
       expect(end.endT!.to.endT?.type).toBe('merge');
     }
   });
-  it('keeps the new interstation carriageways inside the existing sat-nav texture extent', () => {
-    const net = new Network();
+  it('keeps the new interstation carriageways inside the sat-nav extent, now the derived map bounds', () => {
+    const net = new Network(), b = net.bounds();
     const added = net.roads.filter((r) => r.f[0].depStation && !(r.name in originalProfiles));
     for (const rd of added) for (const seg of [...rd.f, ...rd.r]) {
       const half = seg.lanes * LW / 2;
-      expect(seg.path.minX - half).toBeGreaterThan(-22000);
-      expect(seg.path.maxX + half).toBeLessThan(22000);
-      expect(seg.path.minY - half).toBeGreaterThan(-20000);
-      expect(seg.path.maxY + half).toBeLessThan(20000);
+      expect(seg.path.minX - half).toBeGreaterThan(b.x0);
+      expect(seg.path.maxX + half).toBeLessThan(b.x1);
+      expect(seg.path.minY - half).toBeGreaterThan(b.y0);
+      expect(seg.path.maxY + half).toBeLessThan(b.y1);
     }
+  });
+  it('derives map bounds that contain every segment and every station with a margin, and no more', () => {
+    const net = new Network(), b = net.bounds();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const seg of net.segs) {
+      const half = seg.lanes * seg.laneW / 2 + 200;
+      expect(seg.path.minX - half, seg.name).toBeGreaterThan(b.x0);
+      expect(seg.path.maxX + half, seg.name).toBeLessThan(b.x1);
+      expect(seg.path.minY - half, seg.name).toBeGreaterThan(b.y0);
+      expect(seg.path.maxY + half, seg.name).toBeLessThan(b.y1);
+      x0 = Math.min(x0, seg.path.minX); x1 = Math.max(x1, seg.path.maxX);
+      y0 = Math.min(y0, seg.path.minY); y1 = Math.max(y1, seg.path.maxY);
+    }
+    // a station disc (radius 1250 in the world) is never cut off at the edge
+    for (const st of net.stations) {
+      expect(st.x - 1300).toBeGreaterThan(b.x0); expect(st.x + 1300).toBeLessThan(b.x1);
+      expect(st.y - 1300).toBeGreaterThan(b.y0); expect(st.y + 1300).toBeLessThan(b.y1);
+    }
+    // the margin is a frame around the roads, not a fixed oversized box
+    for (const gap of [x0 - b.x0, b.x1 - x1, y0 - b.y0, b.y1 - y1]) expect(gap).toBeLessThan(4000);
+    expect(b.x1 - b.x0).toBeCloseTo(b.w, 6);
+    expect(b.y1 - b.y0).toBeCloseTo(b.h, 6);
   });
   it('charges closures and jams only inside the traversed interval', () => {
     const net = new Network(), host = net.roads.find((r) => r.name === 'M1')!.f[1];
@@ -68,7 +90,8 @@ describe('expanded haulage network', () => {
     host.blocks = close(start - 100, start + 100);
     host.veh = [];
     const partial = net.route(host, start, goals, 0, true)!;
-    expect(partial.cost).toBe(baseline + 100 * 40);
+    // a full closure costs 40 times the legal time across it: 100 units here at posted limit 4 (280 units/s)
+    expect(partial.cost).toBeCloseTo(baseline + 40 * 100 / 280, 6);
     host.blocks.push(...host.blocks); // duplicate reports must not multiply a lane's closure.
     expect(net.route(host, start, goals, 0, true)!.cost).toBe(partial.cost);
     host.blocks = [];
@@ -89,7 +112,7 @@ describe('expanded haulage network', () => {
     const route = net.route(host, start, [{ seg: host, s: finish }], 0, true)!;
     expect(route.trans).toEqual([]);
     expect(Number.isFinite(route.cost)).toBe(true);
-    expect(route.cost).toBeGreaterThan(finish - start);
+    expect(route.cost).toBeGreaterThan(net.route(host, start, [{ seg: host, s: finish }])!.cost);
     expect(net.route(host, host.len, [{ seg: host, s: 0 }], 0, true)).toBeNull();
     expect(net.route(host, start, [], 0, true)).toBeNull();
   });
@@ -152,7 +175,7 @@ describe('expanded haulage network', () => {
       expect(normal.trans).toEqual([]);
       const middle = host.path.nearest(0, 0).s;
       host.blocks = Array.from({ length: host.lanes }, (_, lane) => ({ lane, s0: middle - 600, s1: middle + 600, inc: null }));
-      // Distance mode remains the stable source for job prices.
+      // Without live traffic, the legal travel time is unaffected by closures.
       expect(net.route(host, start, goals)!.cost).toBe(normal.cost);
       const diversion = net.route(host, start, goals, 0, true)!;
       expect(diversion.trans.some((t) => t === entry), host.name).toBe(true);
@@ -201,7 +224,8 @@ describe('expanded haulage network', () => {
   it('adds two signed interstation roads with live gates and preserves every station pair', () => {
     const warn = vi.spyOn(console, 'warn');
     const net = new Network();
-    const added = net.roads.filter((r) => r.f[0].depStation && !(r.name in originalProfiles));
+    // interstation roads run from gate to gate; a link road (Kestrel Link) ends at a junction instead
+    const added = net.roads.filter((r) => r.f[0].depStation && r.f[r.f.length - 1].arrStation && !(r.name in originalProfiles));
     expect(added).toHaveLength(2);
     expect(new Set(added.map((r) => r.name)).size).toBe(2);
     expect(net.stations).toHaveLength(7);

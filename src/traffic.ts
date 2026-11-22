@@ -350,10 +350,13 @@ export class Traffic {
         if (!this.spawnRoom(false)) break;
         const at = sections.shift()!;
         if (at.remaining-- > 0) {
-          // Low-discrepancy sampling covers the entire section even when only a few slots remain.
-          const s = 300 + at.phase * (at.seg.len - 600);
-          if (!this.inAux(at.seg, s)) this.spawnNPC(at.seg, s, false);
-          at.phase = (at.phase + 0.6180339887498949) % 1;
+          // Low-discrepancy sampling covers the entire section even when only a few slots remain. A slot that lands
+          // beside a slip road or lay-by moves on to the next sample, so a busy section still gets its turn.
+          for (let tries = 0; tries < 4; tries++) {
+            const s = 300 + at.phase * (at.seg.len - 600);
+            at.phase = (at.phase + 0.6180339887498949) % 1;
+            if (!this.inAux(at.seg, s)) { this.spawnNPC(at.seg, s, false); break; }
+          }
           if (at.remaining > 0) sections.push(at);
         }
         if (!sections.length) roads.delete(name);
@@ -523,6 +526,17 @@ export class Traffic {
       const z = seg.auxAt(v.s, v.lane < 0 ? -1 : 1);
       if (z && z.type === 'exit') return z.trans!;
     }
+    return this.endFor(v, seg);
+  }
+  /** v is done with (or never reached) the pump it was given: free it for the next vehicle */
+  private releasePump(v: Veh) {
+    if (v.svc && v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;
+    v.svc = null; v.pump = -1; v.pumpDone = false; v.latT = null;
+  }
+  /** where v carries on at the end of seg: a road that forks (a Fuel & Repair entry) takes the branch v is routed along */
+  private endFor(v: Veh, seg: Seg): Trans | null {
+    const r = v.route[0];
+    if (seg.endT && r && r !== seg.endT && r.from === seg && r.type === 'end' && r.fromS >= seg.len - 1) return r;
     return seg.endT;
   }
 
@@ -684,7 +698,7 @@ export class Traffic {
         if (applied) continue;
       }
       if (v.s >= seg.len) {
-        if (seg.endT) { this.apply(v, seg.endT, v.s - seg.len); continue; }
+        if (seg.endT) { this.apply(v, this.endFor(v, seg)!, v.s - seg.len); continue; }
         if (v.isPlayer) v.s = seg.len; else v.dead = true;
       }
       break;
@@ -711,10 +725,11 @@ export class Traffic {
     }
     v.pend = null;
     if (v.gate) { v.gate = null; v.stopAt = null; }
+    // a pump held for a vehicle that turned off to the repair bay instead
+    if (v.svc && !old.svc && t.to !== v.svc.seg) this.releasePump(v);
     if (old.svc) {
       if (this.leaving.get(old.svc) === v) this.leaving.set(old.svc, null);
-      if (v.svc && v.pump >= 0 && v.svc.pumps[v.pump].occ === v) v.svc.pumps[v.pump].occ = null;
-      v.svc = null; v.pump = -1; v.pumpDone = false; v.latT = null;
+      this.releasePump(v);
       if (!v.isPlayer) { v.svcTarget = null; v.route = []; this.reroute(v); return; }
     }
     if (v.isPlayer) this.ctl.onTrans(v, t);
@@ -726,7 +741,7 @@ export class Traffic {
     const entry = sv.exit.to;
     const cands: Veh[] = [];
     for (let i = sv.seg.veh.length - 1; i >= 0; i--) { const o = sv.seg.veh[i]; if (o.pump < 0 && !o.pumpDone) cands.push(o); }
-    for (let i = entry.veh.length - 1; i >= 0; i--) { const o = entry.veh[i]; if (o.s > entry.len - 260) cands.push(o); }
+    for (let i = entry.veh.length - 1; i >= 0; i--) { const o = entry.veh[i]; if (o.s > entry.len - 260 && this.endFor(o, entry)?.to === sv.seg) cands.push(o); }
     for (const c of cands) {
       const order = sv.pumps.map((p, i) => i).sort((a, b) => Math.abs(sv.seg.laneLat(a)) - Math.abs(sv.seg.laneLat(b)));
       const free = order.find((i) => !sv.pumps[i].occ);

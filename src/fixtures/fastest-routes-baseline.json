@@ -1,0 +1,484 @@
+[
+ {
+  "from": "Terra Nova",
+  "to": "Kestrel Station",
+  "roads": [
+   "Aurora Way",
+   "pass-through Harbor Prime",
+   "Harbor Run"
+  ],
+  "distance": 27793,
+  "cost": 30293,
+  "deadline": 180
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Jove Gasport",
+  "roads": [
+   "M1"
+  ],
+  "distance": 30620,
+  "cost": 30620,
+  "deadline": 181
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Vesta Colony",
+  "roads": [
+   "Cinder Road",
+   "pass-through Ember Refinery",
+   "Slag Highway"
+  ],
+  "distance": 23952,
+  "cost": 26452,
+  "deadline": 163
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Harbor Prime",
+  "roads": [
+   "Aurora Way"
+  ],
+  "distance": 13926,
+  "cost": 13926,
+  "deadline": 107
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Glacier Outpost",
+  "roads": [
+   "M1",
+   "pass-through Jove Gasport",
+   "Ice Road"
+  ],
+  "distance": 41513,
+  "cost": 44013,
+  "deadline": 241
+ },
+ {
+  "from": "Terra Nova",
+  "to": "Ember Refinery",
+  "roads": [
+   "Cinder Road"
+  ],
+  "distance": 11523,
+  "cost": 11523,
+  "deadline": 96
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Terra Nova",
+  "roads": [
+   "M2",
+   "M1"
+  ],
+  "distance": 30104,
+  "cost": 30104,
+  "deadline": 179
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Jove Gasport",
+  "roads": [
+   "Frost Line",
+   "pass-through Glacier Outpost",
+   "Ice Road"
+  ],
+  "distance": 22958,
+  "cost": 25458,
+  "deadline": 158
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Vesta Colony",
+  "roads": [
+   "M2"
+  ],
+  "distance": 30876,
+  "cost": 30876,
+  "deadline": 182
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Harbor Prime",
+  "roads": [
+   "Harbor Run"
+  ],
+  "distance": 13910,
+  "cost": 13910,
+  "deadline": 107
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Glacier Outpost",
+  "roads": [
+   "Frost Line"
+  ],
+  "distance": 12066,
+  "cost": 12066,
+  "deadline": 99
+ },
+ {
+  "from": "Kestrel Station",
+  "to": "Ember Refinery",
+  "roads": [
+   "M2",
+   "M1",
+   "pass-through Terra Nova",
+   "Cinder Road"
+  ],
+  "distance": 41577,
+  "cost": 44077,
+  "deadline": 241
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Terra Nova",
+  "roads": [
+   "M1"
+  ],
+  "distance": 30634,
+  "cost": 30634,
+  "deadline": 181
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Kestrel Station",
+  "roads": [
+   "Ice Road",
+   "pass-through Glacier Outpost",
+   "Frost Line"
+  ],
+  "distance": 22979,
+  "cost": 25479,
+  "deadline": 158
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Vesta Colony",
+  "roads": [
+   "Ore Road"
+  ],
+  "distance": 22981,
+  "cost": 22981,
+  "deadline": 147
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Harbor Prime",
+  "roads": [
+   "Ice Road",
+   "pass-through Glacier Outpost",
+   "Frost Line",
+   "pass-through Kestrel Station",
+   "Harbor Run"
+  ],
+  "distance": 36839,
+  "cost": 41839,
+  "deadline": 231
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Glacier Outpost",
+  "roads": [
+   "Ice Road"
+  ],
+  "distance": 10943,
+  "cost": 10943,
+  "deadline": 94
+ },
+ {
+  "from": "Jove Gasport",
+  "to": "Ember Refinery",
+  "roads": [
+   "Ore Road",
+   "pass-through Vesta Colony",
+   "Slag Highway"
+  ],
+  "distance": 35413,
+  "cost": 37913,
+  "deadline": 214
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Terra Nova",
+  "roads": [
+   "Slag Highway",
+   "pass-through Ember Refinery",
+   "Cinder Road"
+  ],
+  "distance": 23976,
+  "cost": 26476,
+  "deadline": 163
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Kestrel Station",
+  "roads": [
+   "M2"
+  ],
+  "distance": 30814,
+  "cost": 30814,
+  "deadline": 182
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Jove Gasport",
+  "roads": [
+   "Ore Road"
+  ],
+  "distance": 23305,
+  "cost": 23305,
+  "deadline": 149
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Harbor Prime",
+  "roads": [
+   "Slag Highway",
+   "pass-through Ember Refinery",
+   "Cinder Road",
+   "pass-through Terra Nova",
+   "Aurora Way"
+  ],
+  "distance": 37852,
+  "cost": 42852,
+  "deadline": 235
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Glacier Outpost",
+  "roads": [
+   "Ore Road",
+   "pass-through Jove Gasport",
+   "Ice Road"
+  ],
+  "distance": 34198,
+  "cost": 36698,
+  "deadline": 208
+ },
+ {
+  "from": "Vesta Colony",
+  "to": "Ember Refinery",
+  "roads": [
+   "Slag Highway"
+  ],
+  "distance": 12482,
+  "cost": 12482,
+  "deadline": 100
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Terra Nova",
+  "roads": [
+   "Aurora Way"
+  ],
+  "distance": 13920,
+  "cost": 13920,
+  "deadline": 107
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Kestrel Station",
+  "roads": [
+   "Harbor Run"
+  ],
+  "distance": 13917,
+  "cost": 13917,
+  "deadline": 107
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Jove Gasport",
+  "roads": [
+   "Harbor Run",
+   "pass-through Kestrel Station",
+   "Frost Line",
+   "pass-through Glacier Outpost",
+   "Ice Road"
+  ],
+  "distance": 36824,
+  "cost": 41824,
+  "deadline": 231
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Vesta Colony",
+  "roads": [
+   "Aurora Way",
+   "pass-through Terra Nova",
+   "Cinder Road",
+   "pass-through Ember Refinery",
+   "Slag Highway"
+  ],
+  "distance": 37822,
+  "cost": 42822,
+  "deadline": 235
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Glacier Outpost",
+  "roads": [
+   "Harbor Run",
+   "pass-through Kestrel Station",
+   "Frost Line"
+  ],
+  "distance": 25932,
+  "cost": 28432,
+  "deadline": 171
+ },
+ {
+  "from": "Harbor Prime",
+  "to": "Ember Refinery",
+  "roads": [
+   "Aurora Way",
+   "pass-through Terra Nova",
+   "Cinder Road"
+  ],
+  "distance": 25393,
+  "cost": 27893,
+  "deadline": 169
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Terra Nova",
+  "roads": [
+   "Ice Road",
+   "pass-through Jove Gasport",
+   "M1"
+  ],
+  "distance": 41526,
+  "cost": 44026,
+  "deadline": 241
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Kestrel Station",
+  "roads": [
+   "Frost Line"
+  ],
+  "distance": 12086,
+  "cost": 12086,
+  "deadline": 99
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Jove Gasport",
+  "roads": [
+   "Ice Road"
+  ],
+  "distance": 10942,
+  "cost": 10942,
+  "deadline": 94
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Vesta Colony",
+  "roads": [
+   "Ice Road",
+   "pass-through Jove Gasport",
+   "Ore Road"
+  ],
+  "distance": 33873,
+  "cost": 36373,
+  "deadline": 207
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Harbor Prime",
+  "roads": [
+   "Frost Line",
+   "pass-through Kestrel Station",
+   "Harbor Run"
+  ],
+  "distance": 25946,
+  "cost": 28446,
+  "deadline": 171
+ },
+ {
+  "from": "Glacier Outpost",
+  "to": "Ember Refinery",
+  "roads": [
+   "Ice Road",
+   "pass-through Jove Gasport",
+   "Ore Road",
+   "pass-through Vesta Colony",
+   "Slag Highway"
+  ],
+  "distance": 46305,
+  "cost": 51305,
+  "deadline": 273
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Terra Nova",
+  "roads": [
+   "Cinder Road"
+  ],
+  "distance": 11545,
+  "cost": 11545,
+  "deadline": 96
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Kestrel Station",
+  "roads": [
+   "Cinder Road",
+   "pass-through Terra Nova",
+   "Aurora Way",
+   "pass-through Harbor Prime",
+   "Harbor Run"
+  ],
+  "distance": 39287,
+  "cost": 44287,
+  "deadline": 242
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Jove Gasport",
+  "roads": [
+   "Slag Highway",
+   "pass-through Vesta Colony",
+   "Ore Road"
+  ],
+  "distance": 35734,
+  "cost": 38234,
+  "deadline": 215
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Vesta Colony",
+  "roads": [
+   "Slag Highway"
+  ],
+  "distance": 12479,
+  "cost": 12479,
+  "deadline": 100
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Harbor Prime",
+  "roads": [
+   "Cinder Road",
+   "pass-through Terra Nova",
+   "Aurora Way"
+  ],
+  "distance": 25420,
+  "cost": 27920,
+  "deadline": 169
+ },
+ {
+  "from": "Ember Refinery",
+  "to": "Glacier Outpost",
+  "roads": [
+   "Slag Highway",
+   "pass-through Vesta Colony",
+   "Ore Road",
+   "pass-through Jove Gasport",
+   "Ice Road"
+  ],
+  "distance": 46627,
+  "cost": 51627,
+  "deadline": 274
+ }
+]

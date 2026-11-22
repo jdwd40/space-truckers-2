@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, Goal, PASS_THROUGH_DWELL, type RouteOption } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
-import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
+import { Cullable, DEPTH, BAKE, strokeRoute, markRouteEnd, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
 import { GlowLayer, makeGlowTextures } from './glow';
 import { angDiff, clamp, pick, rand, Pt } from './geom';
@@ -16,8 +16,27 @@ import { ZoneDef, ZoneId, ZONE_BY_ID, ZoneLook, zoneAt, lookOf, lerpLook } from 
 import { SetPieces, PieceKind } from './setpieces';
 import { calculateHandling, calculateServiceBrake } from './handling';
 import { advanceCameraOverview, calculateCameraTargets } from './camera';
+import { SectorView } from './sectorview';
+import type { SectorMapScene } from './sectormap';
 
-const STATION_R = 1250;
+export const STATION_R = 1250;
+/**
+ * How a contract deadline follows from the legal travel time of its fastest route (seconds at the posted limit):
+ * (legal time + `startStop` per leg) × `slack` + `grace`.
+ */
+export interface DeadlineRule { slack: number; startStop: number; grace: number }
+/** Most contracts: a generous margin over the legal time, as when routing first went by time (#21). */
+export const DEADLINE: DeadlineRule = { slack: 1.25, startStop: 0, grace: 45 };
+/**
+ * A direct contract between the two stations of a corridor (`Network.corridors`): 1.15 times the time a loaded rig takes
+ * to drive the fast road at the posted limit, which is its legal time plus START_STOP_TIME for pulling away from the gate
+ * and slowing into the dock, plus INCIDENT_ALLOWANCE for the breakdowns, accidents and roadworks a run meets ahead
+ * (ADR 0001). A legal clear-road run on the fast road beats it comfortably.
+ */
+export const START_STOP_TIME = 7;
+/** seconds a corridor deadline allows for incidents and roadworks ahead: rendered legal Polar runs took 159–190 s */
+export const INCIDENT_ALLOWANCE = 40;
+export const CORRIDOR_DEADLINE: DeadlineRule = { slack: 1.15, startStop: START_STOP_TIME, grace: INCIDENT_ALLOWANCE };
 const CARGO: Record<string, string[]> = {
   terra: ['Hydroponic greens', 'Fresh spring water', 'Medical kits', 'Colonist luggage', 'Fizzy drinks', 'Seed vaults'],
   kestrel: ['Starship parts', 'Robot spares', 'Data cores', 'Mail sacks', 'Solar sails'],
@@ -29,6 +48,12 @@ const CARGO: Record<string, string[]> = {
 };
 const TRAILER_FOR: Record<string, number> = { terra: 0, kestrel: 1, jove: 2, vesta: 4, harbor: 5, glacier: 7, ember: 6 };
 
+/** a route on the comparison card: its arrival on the contract clock (`eta`), and the roads avoided to keep to it */
+export interface ComparedRoute extends RouteOption { eta: number; avoid: ReadonlySet<string> }
+/** the fastest route against the best alternative for the contract, with its deadline; `picked` is -1 when none is picked */
+export interface RouteComparison { deadline: number; elapsed: number; picked: number; options: ComparedRoute[] }
+/** what a repair bay quotes before any work; in milestone 1 there is never damage, so it is always empty */
+export interface RepairQuote { facility: string; bayId: string; text: string; items: { what: string; cost: number }[]; total: number }
 export interface NavInfo { title: string; sub: string; dist: number; arrow: number | 'U' | 'dock' | 'fuel' | 'warn'; lanes: boolean[] | null; aux: number; remain: number }
 
 interface Vis { keys: string[]; units: Phaser.GameObjects.Image[]; shadows: Phaser.GameObjects.Image[] }
@@ -76,15 +101,24 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   /** world-space direction of one screen-space unit to the right and down, from the camera rotation: shadows fall that way */
   shX = { x: 1, y: 0 }; shY = { x: 0, y: 1 };
   dockS = new Map<Seg, number>();
-  pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' = 'drive';
+  pstate: 'drive' | 'docking' | 'docked' | 'pulled' | 'park' | 'parked' | 'fuel' | 'repair' = 'drive';
   station: Station | null = null;
   fuelTarget: Services | null = null;
+  /** the Fuel & Repair facility whose repair bay the driver chose at its fork */
+  repairTarget: Services | null = null;
+  /** the way out of Police HQ's turning loop the driver picked, overriding the route's */
+  hqOut: Trans | null = null;
+  /** the repair quote on screen while the rig stands in a repair bay */
+  quote: RepairQuote | null = null;
+  /** the rig has been quoted in the bay it is in, and may drive out */
+  bayDone = false;
   holdT = 0; overT = 0; policeCool = 8; overWarnT = 0; autoHold = false; leavingLayby = false; laybySlot: { s: number; occ: unknown } | null = null;
   escort: { img: Phaser.GameObjects.Image; sh: Phaser.GameObjects.Image; s: number; seg: Seg; lat: number; v: number; t: number } | null = null;
   redAhead = false; limit = 5; blink = 0; routeRedraw = 0; remain = 0; nav: NavInfo | null = null;
   routeDiverted = false;
   private navigationT = 0;
-  costs: Record<string, number> = {};
+  /** The fastest legal route between each pair of stations, keyed `from>to` by station ID: its legal time in seconds and its physical distance. */
+  legalRoutes: Record<string, { time: number; distance: number }> = {};
   fuelSpend = 0; lastLowWarn = -99; clk = 0;
   inc!: Incidents; works!: Roadworks; incG: Phaser.GameObjects.Graphics[] = []; hazardMsg = ''; squeezeOffer: { dir: number; t: number } | null = null;
   armed: import('./network').Aux | null = null;
@@ -99,6 +133,17 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   giant!: Phaser.GameObjects.Image; giantA = 0; gx = 0; gy = 0;
   upcomingT = 0; upcomingCache: { zone: ZoneDef; dist: number } | null = null;
   setPieces!: SetPieces;
+  /** the sector map: whether it is open, where it is looking (kept for the session) and the scene that draws it */
+  sectorOpen = false;
+  sectorView: SectorView | null = null;
+  sectorMap: SectorMapScene | null = null;
+  /**
+   * The waypoint set on the sector map: the place on the road it marks, and every carriageway section it can be reached on.
+   * The route passes it before going on to the goal, and it clears when the rig reaches it. It is never saved.
+   */
+  waypoint: { x: number; y: number; via: Goal[] } | null = null;
+  /** the route the player picked from the route comparison: the sat-nav keeps off `avoid` until arrival or cancellation */
+  routeChoice: { name: string; avoid: ReadonlySet<string> } | null = null;
 
   constructor() { super('world'); }
 
@@ -155,6 +200,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     this.favours = new Favours(this.net, this.traffic, this);
     bus.on('act', () => this.favours.act());
+    bus.on('repairReply', (authorise: boolean) => this.answerQuote(authorise));
     this.inc = new Incidents(this.net, this.traffic, {
       playerCrashed: (inc, atFault, other, fee) => this.onPlayerCrashed(inc, atFault, other, fee),
       playerReleased: (inc) => this.onPlayerReleased(inc),
@@ -184,6 +230,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     bus.on('accept', (job: Job) => this.acceptJob(job));
     this.scale.on('resize', () => this.layoutStars());
     this.layoutStars();
+    this.sectorMap = this.scene.get('sector') as SectorMapScene;
+    this.sectorMap.attach(this);
+    this.scene.launch('sector');
     this.scene.launch('ui');
     // dev only: force a zone from the console, e.g. `__zone('nebula')`
     if (import.meta.env.DEV) (window as any).__zone = (id: ZoneId) => { const z = ZONE_BY_ID[id]; if (z) this.switchZone(z); };
@@ -336,7 +385,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   // ----------------------------------------------------------- sat-nav map
   private buildMap() {
     // bake the static map once into a texture (drawn every frame by the sat-nav camera)
-    const S = 0.06, X0 = -22000, Y0 = -20000, TW = Math.ceil(44000 * S), TH = Math.ceil(40000 * S);
+    // the extent comes from the roads themselves (the same bounds the sector map uses); the scale stays 0.06 unless the
+    // network grows past what one texture can hold
+    const B = this.net.bounds();
+    const S = Math.min(0.06, 4096 / Math.max(B.w, B.h)), X0 = B.x0, Y0 = B.y0, TW = Math.ceil(B.w * S), TH = Math.ceil(B.h * S);
     const g = this.make.graphics({ x: 0, y: 0 }, false);
     const T = (pts: Pt[]) => pts.map((q) => ({ x: (q.x - X0) * S, y: (q.y - Y0) * S }));
     for (const pass of [0, 1]) for (const seg of this.net.segs) {
@@ -358,6 +410,29 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker = this.add.graphics(); this.mapLayer.add(this.mapMarker);
     this.mapArrow = this.add.image(0, 0, 'navarrow'); this.mapLayer.add(this.mapArrow);
   }
+  // ----------------------------------------------------------- sector map
+  /**
+   * Open the full-screen sector map. In solo it pauses the simulation and camera exactly like the pause menu (the
+   * world skips its update while G.paused). It only opens while driving and not already paused, so closing it never
+   * resumes a pause menu or job board. Returns whether it opened.
+   */
+  openSectorMap(): boolean {
+    if (this.sectorOpen || G.paused || G.mode !== 'drive') return false;
+    const w = this.scale.width, h = this.scale.height, top = this.sectorMap?.insetTop ?? 0;
+    if (!this.sectorView) { this.sectorView = new SectorView(this.net.bounds()); this.sectorView.fit(w, h, top); }
+    else this.sectorView.resize(w, h, top);
+    this.sectorOpen = true; G.paused = true;
+    this.sectorMap?.show(this.sectorView);
+    bus.emit('sectormap', true);
+    return true;
+  }
+  closeSectorMap() {
+    if (!this.sectorOpen) return;
+    this.sectorOpen = false; G.paused = false;
+    this.sectorMap?.hide();
+    bus.emit('sectormap', false);
+  }
+  toggleSectorMap() { if (this.sectorOpen) this.closeSectorMap(); else this.openSectorMap(); }
   navMaskG: Phaser.GameObjects.Graphics | null = null;
   setNavRect(x: number, y: number, size: number) {
     this.minicam.setViewport(Math.round(x), Math.round(y), Math.round(size), Math.round(size));
@@ -374,12 +449,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker.clear();
     const p = this.player;
     if (!p.goal) return;
-    const pts = this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 260);
+    const pts = this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 260);
     if (pts.length < 2) return;
-    g.lineStyle(150, 0x0c1534, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    g.lineStyle(100, 0x3ff0ff, 1); g.strokePoints(pts as Phaser.Types.Math.Vector2Like[], false, false);
-    const end = pts[pts.length - 1];
-    g.fillStyle(0xffd23c, 1); g.fillCircle(end.x, end.y, 320); g.fillStyle(0x0c1534, 1); g.fillCircle(end.x, end.y, 140);
+    strokeRoute(g, pts, 150, 100, 0x3ff0ff);
+    markRouteEnd(g, pts[pts.length - 1], 320, 140);
   }
 
   // ----------------------------------------------------------- zones
@@ -441,7 +514,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (this.upcomingT > 0) return this.upcomingCache;
     this.upcomingT = 3;
     const p = this.player;
-    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal, cost: 0 }, p.seg, p.s, 400) : [];
+    const pts: Pt[] = p.goal ? this.net.routePoints({ trans: p.route, goal: p.goal }, p.seg, p.s, 400) : [];
     if (!pts.length) for (let s = p.s; s < p.seg.len; s += 400) pts.push(p.seg.path.at(s));
     let d = 0, lx = p.x, ly = p.y;
     this.upcomingCache = null;
@@ -536,8 +609,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     sfx.click();
   }
   laneChange(d: number) {
-    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.player.state === 'crashed') return;
+    if (G.mode !== 'drive' || this.pstate === 'pulled' || this.pstate === 'fuel' || this.pstate === 'docked' || this.pstate === 'repair' || this.player.state === 'crashed') return;
     const p = this.player, seg = p.seg, n = seg.lanes;
+    const fork = seg.endT?.to.svc;
+    if (fork?.bay && fork.exit.to === seg && p.s < seg.len - 8) { this.chooseBay(fork, d > 0); return; }
+    if (seg.hq && seg === seg.hq.loop && p.s < seg.len - 8) { this.chooseHQExit(d); return; }
     if (seg.kind !== 'motorway') { toast('Stay on the slip road for now', '#ffd27a', 1600); return; }
     const base = p.pend ?? p.lane;
     const tgt = base + d;
@@ -551,7 +627,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       const side = tgt < 0 ? -1 : 1;
       const z = seg.auxAt(p.s + 40, side) || seg.auxAt(p.s, side);
       if (z && (z.type === 'exit' || z.type === 'layby') && p.s < z.s1 - 40) { this.traffic.ask(p, tgt, true); sfx.whoosh(); return; }
-      const soon = seg.aux.find((a) => a.side === side && (a.type === 'exit' || a.type === 'layby') && a.s0 > p.s && a.s0 - p.s < 1100);
+      // the nearest exit or lay-by coming up on that side (a carriageway can have two close together, as on Kestrel Link)
+      const soon = seg.aux.filter((a) => a.side === side && (a.type === 'exit' || a.type === 'layby') && a.s0 > p.s && a.s0 - p.s < 1100)
+        .sort((a, b) => a.s0 - b.s0)[0];
       if (soon) { this.armed = soon; toast('Exit lane coming up — your rig will move over when it opens', '#9fe9ff', 2200); sfx.click(); }
       else toast(side > 0 ? 'No lane to the right here' : 'No lane to the left here', '#ffd27a', 1400);
     }
@@ -560,7 +638,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   // PlayerCtl
   desired(v: Veh): number {
     if (v.state === 'crashed') return 0;
-    if (this.pstate === 'docked' || this.pstate === 'fuel' || this.pstate === 'pulled' || this.pstate === 'parked') return 0;
+    if (this.pstate === 'docked' || this.pstate === 'fuel' || this.pstate === 'pulled' || this.pstate === 'parked' || this.pstate === 'repair') return 0;
     if (G.braking) return 0;
     const cab = cabSpeed();
     let vd = SPEEDS[G.speedSet] * cab;
@@ -574,6 +652,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   extraGap(v: Veh): number {
     if (this.pstate === 'docking') { const d = this.dockS.get(v.seg); if (d !== undefined) return d - v.s; }
     if (this.pstate === 'park') { const z = v.seg.auxAt(v.s, 1); if (this.laybySlot) return this.laybySlot.s - v.s; if (z) return z.s1 - 20 - v.s; }
+    if (v.seg.bay && !this.bayDone) return v.seg.bay.stopS - v.s;
     return Infinity;
   }
   obeySignal(_v: Veh, _st: Stop, state: 'G' | 'A' | 'R'): boolean { return (G.braking || this.autoHold) && state !== 'G'; }
@@ -584,15 +663,56 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     return calculateServiceBrake(v.v, v);
   }
   onTrans(v: Veh, t: Trans) {
+    // an exit off the last stretch before a gate (Police HQ, off Kestrel Link southbound) leaves the dock behind
+    if (t.type === 'exit' && this.pstate === 'docking' && this.dockS.has(t.from)) this.pstate = 'drive';
     if (t.type === 'exit') {
       this.favours.onExit(t);
-      if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
+      if (t.svc?.bay) toast(`Pulling into ${t.svc.name} — press D for the repair bay, A for the pumps`, '#9fe9ff', 3200);
+      else if (t.svc) toast(`Pulling into ${t.svc.name}`, '#9fe9ff');
+      else if (t.to.hq) toast(`Pulling into ${t.to.hq.name} — press A for ${t.to.hq.waysOut[0]} or D for ${t.to.hq.waysOut[1]} at the loop`, '#9fe9ff', 3200);
       else if (t.kind === 'uturn') toast('Turning back', '#9fe9ff');
       else toast(`Exit towards ${t.label}`, '#9fe9ff');
     } else if (t.type === 'merge') {
       hint('merge', 'Merging: your rig slides into traffic by itself when there is a gap — just keep your speed.');
     }
+    if (t.from.bay) { this.bayDone = false; this.repairTarget = null; }
+    if (t.from === this.hqOut?.from) this.hqOut = null;
     if (v.route[0] !== t) this.computeRoute(false);
+  }
+  /** in Police HQ's turning loop: leave by the way out on the left (d < 0) or the right */
+  chooseHQExit(d: number) {
+    const loop = this.player.seg, end = loop.path.at(loop.len);
+    const side = (t: Trans) => { const q = t.to.path.at(Math.min(200, t.to.len)); return -Math.sin(end.h) * (q.x - end.x) + Math.cos(end.h) * (q.y - end.y); };
+    const ways = loop.outs.filter((t) => t.type === 'end').sort((a, b) => side(a) - side(b));
+    const pick = d < 0 ? ways[0] : ways[ways.length - 1];
+    if (!pick || pick === this.hqOut) return;
+    this.hqOut = pick;
+    toast(`Leaving towards ${pick.label}`, '#9fe9ff', 1800);
+    sfx.click();
+    this.computeRoute(false);
+  }
+  /** at a Fuel & Repair fork: head for the repair bay, or back to the pumps */
+  chooseBay(sv: Services, bay: boolean) {
+    if ((this.repairTarget === sv) === bay) return;
+    this.repairTarget = bay ? sv : null;
+    toast(bay ? `Heading for the ${sv.name} repair bay` : `Heading for the ${sv.name} pumps`, '#9fe9ff', 1800);
+    sfx.click();
+    this.computeRoute(false);
+  }
+  /** the rig has pulled up in a repair bay: show the quote. Vehicle condition arrives later, so there is never damage. */
+  private openQuote(sv: Services) {
+    this.pstate = 'repair'; G.braking = false;
+    this.quote = { facility: sv.name, bayId: sv.bay!.id, text: 'No damage to repair', items: [], total: 0 };
+    bus.emit('repairQuote', this.quote);
+  }
+  /** answer the repair quote (authorise or decline) and drive on */
+  answerQuote(authorise: boolean) {
+    if (this.pstate !== 'repair') return;
+    this.pstate = 'drive'; this.bayDone = true; this.repairTarget = null; this.quote = null;
+    if (G.speedSet === 0) G.speedSet = 2;
+    toast(authorise ? 'Nothing needed doing — no charge. Merging back onto the road.' : 'Quote declined. Merging back onto the road.', '#7ff0c0', 3000);
+    sfx.click();
+    this.computeRoute(false);
   }
   onBlocked(kind: 'busy' | 'nolane' = 'nolane', dir = 0) {
     if (kind === 'busy' && dir !== 0) {
@@ -667,23 +787,126 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
 
   // ----------------------------------------------------------- jobs & routing
   goals() {
+    if (this.repairTarget?.bay) return [{ seg: this.repairTarget.bay.seg, s: this.repairTarget.bay.stopS }];
     if (this.fuelTarget) return [{ seg: this.fuelTarget.seg, s: this.fuelTarget.pumpS }];
-    if (G.job) return this.net.stationGoals(this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to]);
-    return [];
+    const st = this.jobStation();
+    return st ? this.net.stationGoals(st) : [];
   }
   computeRoute(announce: boolean) {
     const p = this.player;
     const goals = this.goals();
-    if (!goals.length) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
+    if (!G.job) this.dropRouteChoice();
+    // a fuel or repair detour goes straight there; the waypoint waits until it is done
+    const wp = this.fuelTarget || this.repairTarget?.bay ? null : this.waypoint;
+    // a way out of Police HQ the driver picked leads the route, which carries on to the goal from there
+    const out = this.hqOut?.from === p.seg ? this.hqOut : null;
+    if (out) {
+      const on = goals.length ? this.net.route(out.to, out.toS, goals, 0, true) : null;
+      p.route = [out, ...(on?.trans ?? [])]; p.goal = on?.goal ?? null; this.routeDiverted = false; this.drawRoute(); return;
+    }
+    if (!goals.length && !wp) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
-    const r = this.net.route(p.seg, p.s, goals, side, true);
+    // an unreachable waypoint (say, behind a closure) is kept, and the route goes straight to the goal until it is reachable
+    const rv = wp && this.net.routeVia(p.seg, p.s, wp.via, goals, side, true);
+    // the pin sits on the carriageway the route passes it on
+    if (wp && rv) { const q = rv.via.seg.path.at(rv.via.s); wp.x = q.x; wp.y = q.y; }
+    // a picked route only steers the way to the contract's station, not a detour to fuel or repair (and a waypoint replaces it)
+    const avoid = !wp && this.jobBound() ? this.routeChoice?.avoid : undefined;
+    let r: Route | null = rv || (avoid ? this.net.route(p.seg, p.s, goals, side, true, avoid) : null);
+    if (avoid && !r) { this.dropRouteChoice(); toast('Picked route is no longer possible — back to the fastest route', '#ffd27a', 3000); }
+    if (!r && goals.length) r = this.net.route(p.seg, p.s, goals, side, true);
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
+    if (!r && this.repairTarget) { this.repairTarget = null; this.computeRoute(announce); return; }
     if (!r && this.fuelTarget) { this.fuelTarget = null; this.computeRoute(announce); return; }
     if (announce) toast('Route updated', '#9fe9ff', 1400);
     this.drawRoute();
   }
+  /**
+   * Set (or move) the waypoint to the road nearest the map point (x, y), within `radius` world units, and reroute through
+   * it. Returns false, keeping any waypoint already set, when there is no road there.
+   */
+  setWaypoint(x: number, y: number, radius = 400): boolean {
+    const via = this.net.waypointGoals(x, y, radius);
+    if (!via.length) return false;
+    const q = via[0].seg.path.at(via[0].s);
+    // the last choice wins: a waypoint replaces a route picked from the comparison
+    this.waypoint = { x: q.x, y: q.y, via }; this.dropRouteChoice();
+    this.reroute();
+    return true;
+  }
+  clearWaypoint() {
+    if (!this.waypoint) return;
+    this.waypoint = null;
+    this.reroute();
+  }
+  /** route again; a rig still waiting at a station gate is first moved to the departure the new route leaves by */
+  private reroute() {
+    const gate = this.atGate(), st = this.jobStation();
+    if (gate && st) this.depart(gate, st.id, !G.braking);
+    else this.computeRoute(false);
+  }
+  /** the rig has driven over the waypoint (on any carriageway it can be reached on) since the last frame */
+  private reachedWaypoint(prevS: number, prevSeg: Seg): boolean {
+    const p = this.player;
+    return !!this.waypoint?.via.some((g) => (p.seg === g.seg && p.s >= g.s - 30 && (prevSeg !== g.seg || prevS < g.s + 200)) ||
+      (prevSeg === g.seg && prevS < g.s && p.seg !== g.seg));
+  }
+  /** whether the sat-nav is leading to the contract's next station (not a fuel stop or repair bay) */
+  private jobBound() { return !!G.job && !this.fuelTarget && !this.repairTarget?.bay; }
+  /** the station the contract needs next */
+  jobStation(): Station | null { return G.job ? this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to] : null; }
+  /** the rig is still waiting at a station gate it has just been put on, so a comparison may leave by any departure */
+  private atGate(): Station | null {
+    const p = this.player, st = p.seg.depStation;
+    return st && this.pstate === 'drive' && p.s <= 160 && Math.abs(p.v) < 1 ? st : null;
+  }
+
+  /**
+   * Route comparison for the contract: the fastest legal route to its next station and the fastest that avoids that
+   * route's main road, each with its legal arrival against the deadline (`eta` and `deadline` are contract-clock
+   * seconds). From a station gate the routes may leave by any departure. Null without a contract.
+   */
+  routeComparison(): RouteComparison | null {
+    const job = G.job, st = this.jobStation();
+    if (!job || !st || G.mode !== 'drive' || !this.player) return null;
+    const p = this.player, gate = this.atGate();
+    const starts = gate ? gate.dep.map((seg) => ({ seg, s: 150 })) : [{ seg: p.seg, s: p.s }];
+    const found = this.net.compareRoutes(starts, this.net.stationGoals(st));
+    const options = found.map((o, i) => {
+      // keep to this route by avoiding the roads only the other one drives
+      const other = found[1 - i], avoid = new Set(other ? other.roads.filter((rd) => !o.roads.includes(rd)) : []);
+      return { ...o, eta: job.elapsed + o.route.cost + START_STOP_TIME, avoid };
+    });
+    const picked = this.routeChoice ? options.findIndex((o) => o.name === this.routeChoice!.name) : -1;
+    return { deadline: job.target, elapsed: job.elapsed, picked, options };
+  }
+  /** follow option i of the route comparison until arrival, completion or cancellation */
+  pickRoute(i: number) {
+    const o = this.routeComparison()?.options[i];
+    if (!o) return;
+    this.routeChoice = { name: o.name, avoid: o.avoid }; this.waypoint = null;
+    this.leaveGateBy(o.start.seg);
+    this.computeRoute(false);
+  }
+  /**
+   * Forget a route picked from the comparison, without rerouting. Every way a choice ends goes through here: a new
+   * contract or stage, delivery, a waypoint, a cancelled choice, or a picked route that is no longer possible.
+   */
+  private dropRouteChoice() { this.routeChoice = null; }
+  /** cancel a picked route: the sat-nav goes back to the fastest route */
+  clearRouteChoice() {
+    if (!this.routeChoice) return;
+    this.dropRouteChoice();
+    this.reroute();
+  }
+  /** still at the gate: move the rig to the departure a picked route leaves by */
+  private leaveGateBy(seg: Seg) {
+    const gate = this.atGate(), st = this.jobStation();
+    if (gate && st && seg !== this.player.seg && gate.dep.includes(seg)) this.depart({ ...gate, dep: [seg] }, st.id, !G.braking);
+  }
+
   /** Reconsider congestion at most every five seconds, never while committed to a slip lane. */
   private refreshNavigation(dt: number) {
     this.navigationT -= dt;
@@ -699,16 +922,16 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private computeCosts() {
     for (const a of this.net.stations) for (const b of this.net.stations) {
       if (a === b) continue;
-      let best = Infinity;
-      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best) best = r.cost; }
-      this.costs[a.id + '>' + b.id] = best;
+      let best = { time: Infinity, distance: Infinity };
+      for (const seg of a.dep) { const r = this.net.route(seg, 100, this.net.stationGoals(b)); if (r && r.cost < best.time) best = { time: r.cost, distance: r.distance }; }
+      this.legalRoutes[a.id + '>' + b.id] = best;
     }
   }
   makeJobs(st: Station): Job[] {
     const rank = rankOf(G.earned);
     const first = G.deliveries === 0;
     let others: Station[] = Phaser.Utils.Array.Shuffle(this.net.stations.filter((o) => o !== st));
-    if (first) others = others.sort((a, b) => (this.costs[st.id + '>' + a.id] ?? 0) - (this.costs[st.id + '>' + b.id] ?? 0));
+    if (first) others = others.sort((a, b) => (this.legalRoutes[st.id + '>' + a.id]?.time ?? 0) - (this.legalRoutes[st.id + '>' + b.id]?.time ?? 0));
     const jobs: Job[] = [];
     for (let i = 0; i < 3; i++) {
       const remote = !first && i === 2 && Math.random() < 0.65;
@@ -716,11 +939,14 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       if (remote) { from = others[0]; to = pick(this.net.stations.filter((o) => o !== from)); }
       let cls = first ? 0 : Math.min(3, Math.floor(Math.random() * (rank + 2)));
       if (i === 0) cls = Math.min(cls, rank);
-      const dist = this.costs[from.id + '>' + to.id] + (remote ? this.costs[st.id + '>' + from.id] : 0);
+      const trip = this.legalRoutes[from.id + '>' + to.id], leg = remote ? this.legalRoutes[st.id + '>' + from.id] : { time: 0, distance: 0 };
+      const dist = trip.distance + leg.distance;
+      const rule = !remote && this.net.corridor(from.id, to.id) ? CORRIDOR_DEADLINE : DEADLINE;
+      const target = (trip.time + leg.time + rule.startStop * (remote ? 2 : 1)) * rule.slack + rule.grace;
       const pay = Math.round(((80 + (dist / 1000) * 15) * CLASSES[cls].mult * (remote ? 1.2 : 1)) / 5) * 5;
       jobs.push({
         id: `${from.id}-${to.id}`, cargo: pick(CARGO[from.id]), from: from.id, to: to.id, cls, pay, dist,
-        stage: from === st ? 'deliver' : 'pickup', target: dist / 225 + 45, elapsed: 0,
+        stage: from === st ? 'deliver' : 'pickup', target, elapsed: 0,
         locked: CLASSES[cls].rank > rank, remote,
       });
     }
@@ -728,6 +954,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   acceptJob(job: Job) {
     G.job = job;
+    this.dropRouteChoice();
     G.mode = 'drive';
     const tesana = (window as any).Tesana;
     tesana?.gameplay?.levelStart({ levelId: job.id, levelIndex: G.deliveries });
@@ -739,9 +966,20 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     hint('start', 'Pick a speed (1–5) at the bottom of the screen, or press a number key, to pull away.');
   }
   depart(st: Station, targetId: string, auto = false) {
-    let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
-    for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    // with a waypoint set, leave by the gate that is fastest through it (if any gate reaches it); otherwise keep to a picked route
+    const via = this.waypoint?.via, choice = via ? undefined : this.routeChoice?.avoid;
+    const cost = (seg: Seg, thru: boolean, avoid?: ReadonlySet<string>) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals, 0, false, avoid))?.cost ?? Infinity;
+    /** the cheapest departure, and its cost (the first departure, at Infinity, when none reaches the goal) */
+    const cheapest = (thru: boolean, avoid?: ReadonlySet<string>) => {
+      let best = st.dep[0], bc = Infinity;
+      for (const seg of st.dep) { const c = cost(seg, thru, avoid); if (c < bc) { bc = c; best = seg; } }
+      return { best, bc };
+    };
+    const thru = !!via && st.dep.some((seg) => cost(seg, true) < Infinity);
+    const picked = cheapest(thru, choice);
+    // a picked route that cannot leave from here gives way to the fastest departure
+    const best = choice && picked.bc === Infinity ? cheapest(false).best : picked.best;
     const p = this.player;
     // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
     const lane = best.lanes - 1, lat = best.laneLat(lane);
@@ -820,6 +1058,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       G.money += total; G.earned += total; G.deliveries++;
       tesana?.gameplay?.levelComplete({ levelId: job.id });
       G.job = null;
+      this.dropRouteChoice();
       this.fuelTarget = null;
       this.computeRoute(false);
       this.refreshPlayerVis();
@@ -832,6 +1071,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (job && job.stage === 'pickup' && job.from === st.id) {
       job.stage = 'deliver';
+      this.dropRouteChoice();
       tesana?.gameplay?.checkpoint({ levelId: job.id, name: 'pickup' });
       this.refreshPlayerVis();
       toast(`Loaded ${job.cargo}! Now deliver to ${this.net.byId[job.to].name}`, '#7ff0c0', 4500);
@@ -841,8 +1081,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (job) {
       const tgt = job.stage === 'pickup' ? job.from : job.to;
-      toast(`Passing through ${st.name} — on to ${this.net.byId[tgt].name}`, '#9fe9ff', 3500);
-      this.after(1.5, () => this.depart(st, tgt, true));
+      toast(`Passing through ${st.name} — waiting for dock clearance, then on to ${this.net.byId[tgt].name}`, '#9fe9ff', 3500);
+      this.after(PASS_THROUGH_DWELL, () => this.depart(st, tgt, true));
       return;
     }
     G.mode = 'board';
@@ -959,6 +1199,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private playerLogic(dt: number, prevS: number, prevSeg: Seg) {
     const p = this.player, seg = p.seg;
     if (G.mode !== 'drive') return;
+    if (this.reachedWaypoint(prevS, prevSeg)) {
+      this.clearWaypoint();
+      toast('Waypoint reached', '#9fe9ff', 1800);
+      sfx.chime();
+    }
     this.refreshNavigation(dt);
     // fuel use
     const ds = p.seg === prevSeg ? Math.max(0, p.s - prevS) : p.v * dt;
@@ -1010,6 +1255,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         this.computeRoute(false);
       }
     }
+    // repair bay: pull up for a quote
+    if (seg.bay && !this.bayDone && this.pstate === 'drive' && p.v < 3 && p.s > seg.bay.stopS - 20) this.openQuote(seg.bay.facility);
     // docking
     const dS = this.dockS.get(seg);
     if (dS !== undefined && this.pstate === 'drive' && p.s > dS - 1300) {
@@ -1036,7 +1283,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
         this.laybySlot = z.slots!.find((sl) => !sl.occ && sl.s > p.s + 40) ?? null;
         if (this.laybySlot) this.laybySlot.occ = p;
         toast('Pulling into the lay-by', '#9fe9ff', 1800);
-      } else if (this.pstate === 'drive' && !(z && z.type === 'exit') && p.pend === null) {
+        // a slip road can join the last stretch before a gate (Kestrel Link), so a rig already slowing to dock still merges
+      } else if ((this.pstate === 'drive' || this.pstate === 'docking') && !(z && z.type === 'exit') && p.pend === null) {
         this.traffic.ask(p, side > 0 ? seg.lanes - 1 : 0, true);
         if (Math.random() < 0.02) hint('auto-merge', 'Your rig merges back into traffic automatically when a gap opens.');
       }
@@ -1117,6 +1365,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const lanesAll: boolean[] | null = seg.kind === 'motorway' ? Array.from({ length: seg.lanes }, (_, i) => !this.traffic.dropping(seg, i, p.s) && !this.traffic.deadLane(seg, i, p.s) && !this.traffic.laneClosed(seg, i, p.s)) : null;
     if (!p.goal) return { title: 'Free roam', sub: 'Dock at any station for new jobs', dist: 0, arrow: 0, lanes: lanesAll, aux: 0, remain: 0 };
     if (this.pstate === 'fuel') return { title: 'Refuelling', sub: 'Filling the tank…', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
+    if (this.pstate === 'repair') return { title: 'Repair bay', sub: 'Read the quote', dist: 0, arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
+    if (seg.bay && !this.bayDone) return { title: 'Repair bay', sub: 'Pull up for a quote', dist: Math.max(0, seg.bay.stopS - p.s), arrow: 'fuel', lanes: null, aux: 0, remain: 0 };
     let d = 0, ss = p.s, next: Trans | null = null, total = 0;
     for (const t of p.route) {
       const leg = t.fromS - ss;
@@ -1136,7 +1386,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (!next) {
       if (seg.kind === 'ramp' && seg.endT?.type === 'merge') return { title: `Merge onto ${seg.endT.to.name}`, sub: 'Your rig finds a gap by itself', dist: seg.len - p.s, arrow: 0, lanes: null, aux: 0, remain: total };
-      if (seg.svc || (seg.kind === 'ramp' && seg.endT?.to.svc)) return { title: 'Pull up at a free pump', sub: seg.svc ? 'Queue if the pumps are busy' : 'Fuel stop', dist: total, arrow: 'fuel', lanes: null, aux: 0, remain: total };
+      if (seg.svc || (seg.kind === 'ramp' && seg.endT?.to.svc)) {
+        const sub = seg.svc ? 'Queue if the pumps are busy' : seg.endT!.to.svc!.bay ? 'Fuel stop · press D for the repair bay' : 'Fuel stop';
+        return { title: 'Pull up at a free pump', sub, dist: total, arrow: 'fuel', lanes: null, aux: 0, remain: total };
+      }
       return { title: this.fuelTarget ? destName : `Dock at ${destName}`, sub: 'Stay on this road', dist: total, arrow: 'dock', lanes: lanesAll, aux: 0, remain: total };
     }
     if (next.kind === 'dock') return { title: `Dock at ${next.label}`, sub: 'Change roads here — your rig carries on by itself', dist: d, arrow: 'dock', lanes: lanesAll, aux: 0, remain: total };

@@ -1,4 +1,5 @@
 import { Path, Pt, Pose, bezier, catmull } from './geom';
+import { SPEEDS } from './speeds';
 
 /** Lane width. Wider lanes give the big rigs room to manoeuvre. */
 export const LW = 32;
@@ -16,18 +17,100 @@ export interface Slot { s: number; occ: unknown }
 export interface Aux { side: 1 | -1; s0: number; s1: number; type: 'exit' | 'merge' | 'layby'; trans?: Trans; slots?: Slot[] }
 export interface Trans {
   id: number; type: 'exit' | 'merge' | 'end'; from: Seg; fromS: number; to: Seg; toS: number; side: 1 | -1;
-  latShift: number; label: string; kind: 'jct' | 'uturn' | 'services' | 'link' | 'dock'; dir: 'L' | 'R' | 'S' | 'U'; aux?: Aux; svc?: Services; pen?: number;
+  latShift: number; label: string; kind: 'jct' | 'uturn' | 'services' | 'link' | 'dock'; dir: 'L' | 'R' | 'S' | 'U'; aux?: Aux; svc?: Services;
+  /** extra seconds the router adds for taking this transition */
+  pen?: number;
 }
 export interface Stop { s: number; kind: 'signal'; sig: Signal; group: number }
-export interface Services { name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[]; waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number }
-export interface Layby { seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
+/** A roadside fuel stop. A 'fuel-repair' facility also has a repair bay behind the same exit. `id` is stable across builds. */
+export interface Services {
+  id: string; kind: Extract<FacilityKind, 'fuel' | 'fuel-repair'>; name: string; size: number; host: Seg; seg: Seg; pumps: { lane: number; occ: unknown }[];
+  waitS: number; pumpS: number; exit: Trans; x: number; y: number; h: number; bay: RepairBay | null;
+}
+/** The stopping place in a Fuel & Repair facility where a driver is quoted for work on their vehicle. */
+export interface RepairBay { id: string; facility: Services; seg: Seg; stopS: number; x: number; y: number; h: number }
+/** What kind of facility a place is. */
+export type FacilityKind = 'fuel' | 'fuel-repair' | 'layby' | 'police-hq';
+/** How each kind of facility is named to a driver. */
+export const FACILITY_NAME: Record<FacilityKind, string> = { fuel: 'Fuel stop', 'fuel-repair': 'Fuel & Repair', layby: 'Lay-by', 'police-hq': 'Police HQ' };
+/**
+ * Police HQ: a facility on a dead-end spur. Its `loop` is a turning loop that every way in leads to and every way out
+ * leaves from; `stopS` is where a rig pulls up outside the building. `id` is stable across builds. Its roads (`segs`)
+ * are never used as a through route. `where` says where it is (the road it is off), and `waysOut` names where its two
+ * ways out lead, the left one first.
+ */
+export interface PoliceHQ {
+  id: string; kind: 'police-hq'; name: string; loop: Seg; stopS: number; segs: Seg[]; x: number; y: number; h: number;
+  where: string; waysOut: [string, string];
+}
+export interface Layby { id: string; seg: Seg; aux: Aux; x: number; y: number; h: number; name: string; waiting: number; refillT: number }
 export interface SignPanel { side: 'L' | 'C' | 'R'; color: number; title: string; sub?: string; arrow: number | 'U' | null; icon?: string }
 export interface Sign { seg: Seg; s: number; kind: 'gantry' | 'side'; panels: SignPanel[]; side: 1 | -1 }
 export interface LimitSign { seg: Seg; s: number; limit: number }
 export interface Crossing { x: number; y: number; h: number; sig: Signal; corners: Pt[]; lights: { seg: Seg; s: number; group: number }[] }
 export interface Goal { seg: Seg; s: number }
-export interface Route { trans: Trans[]; goal: Goal; cost: number; diverted?: boolean }
-export interface Camera { seg: Seg; s: number; x: number; y: number }
+/** `cost` is the route's travel time in seconds (at the posted limit, plus any delays); `distance` its physical length. */
+export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
+/** a route through a waypoint: `via` is the place on the road it passes, and `goal` is where it ends (`via` itself with no goal) */
+export interface ViaRoute extends Route { via: Goal }
+/** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
+export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
+/** A road under an inspected point: its carriageway, where that goes, the posted limit there and the carriageway's cameras. */
+export interface RoadInspection { kind: 'road'; seg: Seg; road: string; carriageway: string; towards: string | null; limit: number; cameras: Camera[]; x: number; y: number }
+/** A facility under an inspected point, by its stable ID, with what a driver can use there. */
+/** `where`, when given, is shown under the name instead of the kind of facility. */
+export interface FacilityInspection { kind: 'facility'; id: string; name: string; facility: FacilityKind; where?: string; services: string[]; x: number; y: number }
+/**
+ * Lanes closed by roadworks or an incident: the carriageway, which lanes (0 is the left lane) are closed and open, and
+ * a line saying so. (x, y) is its middle, for a marker; `extent` the closed stretch of each section it covers.
+ */
+export interface ClosureInspection {
+  kind: 'roadworks' | 'incident'; incident?: 'breakdown' | 'accident';
+  road: string; carriageway: string; towards: string | null;
+  lanes: number; closed: number[]; open: number[]; status: string;
+  x: number; y: number; extent: { seg: Seg; s0: number; s1: number }[];
+}
+/** what Network.inspect finds under a world point */
+export type Inspection = RoadInspection | FacilityInspection | ClosureInspection;
+
+/** the next exit ahead on a carriageway: where it goes, how far ahead (metres) and where it leaves the carriageway */
+export interface NextExit { trans: Trans; label: string; kind: Trans['kind']; side: 1 | -1; d: number; x: number; y: number }
+
+/** "Right lane closed", "2 left lanes closed", "Lanes 2–3 of 4 closed": lane 0 is the left lane */
+export function closedLanesText(closed: number[], lanes: number): string {
+  const n = closed.length;
+  if (n >= lanes) return 'All lanes closed';
+  const run = closed.every((l, i) => i === 0 || l === closed[i - 1] + 1);
+  const side = run && closed[0] === 0 ? 'left' : run && closed[n - 1] === lanes - 1 ? 'right' : null;
+  if (side) return n === 1 ? `${side[0].toUpperCase()}${side.slice(1)} lane closed` : `${n} ${side} lanes closed`;
+  return `Lane${n === 1 ? '' : 's'} ${closed.map((l) => l + 1).join(', ')} of ${lanes} closed`;
+}
+/** how close to a fuel stop's or a lay-by's middle an inspected point counts as on it */
+const FACILITY_REACH = 260, LAYBY_REACH = 150, HQ_REACH = 300;
+/** A pair of stations joined by more than one genuinely different route (ADR 0001). */
+export interface Corridor { stations: [string, string] }
+/** an axis-aligned world rectangle */
+/**
+ * One route offered in a route comparison. `start` is where it begins (which departure, for a rig at a station gate);
+ * `mainRoad` the road it drives furthest on; `roads` the roads it drives, in order; `passThrough` the stations it docks
+ * at on the way; `cameras` and `facilities` (fuel stops and Fuel & Repair) those on the carriageways it drives, in order.
+ */
+export interface RouteOption {
+  name: string; start: Goal; route: Route; mainRoad: string; roads: string[]; passThrough: Station[];
+  cameras: Camera[]; facilities: Services[];
+}
+export interface Bounds { x0: number; y0: number; x1: number; y1: number; w: number; h: number }
+/** how far the map extent reaches past the outermost road edge: room for a station disc and its label */
+export const MAP_MARGIN = 1800;
+
+/** Seconds a rig waits for dock clearance when it passes through a station before it is sent on towards its goal. */
+export const PASS_THROUGH_DWELL = 20;
+/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the clearance wait and pulling away again. */
+export const PASS_THROUGH_TIME = PASS_THROUGH_DWELL + 6;
+/** seconds the router adds for turning into a repair bay, so it only routes through one when the bay is the goal */
+export const REPAIR_BAY_TIME = 60;
+/** Seconds of delay the router expects from each stopped vehicle in a substantial queue. */
+export const JAM_DELAY = 3;
 
 export const GREEN = 0x1d7a4c, BLUE = 0x1f5fb8, POLICE = 0x283a8f;
 
@@ -67,11 +150,16 @@ export class Seg {
   freeLat = false;
   laneW = LW;
   svc: Services | null = null;
+  bay: RepairBay | null = null;
+  /** the Police HQ this road belongs to (its ramps and yard) */
+  hq: PoliceHQ | null = null;
   limits: Int8Array = new Int8Array(1);
   road = '';
   /** closed lanes; `warn` is how far before s0 a signed closure already counts as closed, for merging and spawning */
   blocks: { lane: number; s0: number; s1: number; inc: unknown; warn?: number }[] = [];
   localOK = false;
+  /** a motorway within this distance of a station centre is posted at 3 */
+  stationZone = 3300;
   density = 1;
   trucky = false;
   /** lanes dropped on the outer side at the end of this section / gained at its start */
@@ -109,6 +197,8 @@ export class Seg {
   }
 }
 
+/** a lower-case, hyphenated form of a name, for stable IDs */
+export const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const dirv = (h: number) => ({ x: Math.cos(h), y: Math.sin(h) });
 
 export class Network {
@@ -118,11 +208,13 @@ export class Network {
   signals: Signal[] = [];
   services: Services[] = [];
   laybys: Layby[] = [];
+  policeHQs: PoliceHQ[] = [];
   signs: Sign[] = [];
   limitSigns: LimitSign[] = [];
   crossings: Crossing[] = [];
   cameras: Camera[] = [];
   roads: Road[] = [];
+  corridors: Corridor[] = [];
   spawnSegs: { seg: Seg; rate: number; mitesOnly: boolean }[] = [];
   byId: Record<string, Station> = {};
 
@@ -174,6 +266,22 @@ export class Network {
     const rd: Road = { name, c, f, r, fLen: len(f), rLen: len(r) };
     this.roads.push(rd);
     return rd;
+  }
+  private boundsCache: Bounds | null = null;
+  /**
+   * The map extent: every segment's geometry (with its lane width) plus MAP_MARGIN. The sat-nav texture and the sector
+   * map both use it, so no road is ever cut off at the edge. The network is static once built, so it is computed once.
+   */
+  bounds(): Bounds {
+    if (this.boundsCache) return this.boundsCache;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const seg of this.segs) {
+      const half = (seg.lanes * seg.laneW) / 2 + (seg.shoulder ? LW : 0);
+      x0 = Math.min(x0, seg.path.minX - half); x1 = Math.max(x1, seg.path.maxX + half);
+      y0 = Math.min(y0, seg.path.minY - half); y1 = Math.max(y1, seg.path.maxY + half);
+    }
+    x0 -= MAP_MARGIN; y0 -= MAP_MARGIN; x1 += MAP_MARGIN; y1 += MAP_MARGIN;
+    return (this.boundsCache = { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 });
   }
   /** (section, local s) for a distance along a chained carriageway */
   private locate(segs: Seg[], s: number): { seg: Seg; s: number } {
@@ -260,7 +368,11 @@ export class Network {
     this.signs.push({ seg: a, s: sA + 60, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: 'Turn back', sub: label, arrow: 'U' }] });
     return { r, t };
   }
-  private servicesAt(host: Seg, s0: number, pumps: number, name: string) {
+  /**
+   * A fuel stop on the outer side of host: exit at s0, an entry road to the pumps, an exit road merging back. With
+   * `repair` the entry also forks to a repair bay beside the pumps, which merges back onto host after the pumps do.
+   */
+  private servicesAt(host: Seg, s0: number, pumps: number, name: string, repair = false) {
     const laneW = 30, W = pumps * laneW;
     const latC = host.laneLat(host.lanes) + LW / 2 + 80 + W / 2;
     const a = s0 + 330, b = a + 340;
@@ -272,10 +384,7 @@ export class Network {
     const d1 = Math.hypot(pa.x - p0.x, pa.y - p0.y) * 0.42;
     const entry = this.seg(name + ' in', new Path(bezier(p0, { x: p0.x + Math.cos(p0.h) * d1, y: p0.y + Math.sin(p0.h) * d1 }, { x: pa.x - Math.cos(hP) * d1, y: pa.y - Math.sin(hP) * d1 }, pa, 60)), 1, 'ramp', 0, 3);
     entry.road = name;
-    const ax: Aux = { side: 1, s0: s0 - 650, s1: s0, type: 'exit' };
-    host.aux.push(ax);
-    const te = this.addT({ type: 'exit', from: host, fromS: s0, to: entry, toS: 0, side: 1, latShift: 0, label: name, kind: 'services', dir: 'R', aux: ax });
-    ax.trans = te;
+    const te = this.exitTo(host, s0, 1, 650, entry, name, 'services');
     entry.endT = this.addT({ type: 'end', from: entry, fromS: entry.len, to: ps, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
     const m = b + 330;
     const p3 = this.auxPt(host, m, 1);
@@ -283,18 +392,38 @@ export class Network {
     const exitR = this.seg(name + ' out', new Path(bezier(pb, { x: pb.x + Math.cos(hP) * d2, y: pb.y + Math.sin(hP) * d2 }, { x: p3.x - Math.cos(p3.h) * d2, y: p3.y - Math.sin(p3.h) * d2 }, p3, 60)), 1, 'ramp', 0, 3);
     exitR.road = name;
     ps.endT = this.addT({ type: 'end', from: ps, fromS: ps.len, to: exitR, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
-    const am: Aux = { side: 1, s0: m, s1: m + 560, type: 'merge' };
-    host.aux.push(am);
-    exitR.endT = this.addT({ type: 'merge', from: exitR, fromS: exitR.len, to: host, toS: m, side: 1, latShift: 0, label: host.road, kind: 'link', dir: 'S', aux: am });
-    am.trans = exitR.endT;
+    this.mergeOnto(exitR, host, m, 1, 560);
     const mid = host.path.at((a + b) / 2, latC);
-    const svc: Services = { name, size: pumps, host, seg: ps, pumps: [], waitS: 26, pumpS: 205, exit: te, x: mid.x, y: mid.y, h: hP };
+    const id = `services:${slug(name)}`;
+    const svc: Services = { id, kind: repair ? 'fuel-repair' : 'fuel', name, size: pumps, host, seg: ps, pumps: [], waitS: 26, pumpS: 205, exit: te, x: mid.x, y: mid.y, h: hP, bay: null };
     for (let i = 0; i < pumps; i++) svc.pumps.push({ lane: i, occ: null });
     ps.svc = svc; te.svc = svc;
     this.services.push(svc);
+    if (repair) {
+      // the bay runs beside the pumps on the far side, then has its own road back, merging after the pumps' merge
+      const latB = latC + W / 2 + 52, ba = a + 150, bb = b + 100;
+      const q0 = host.path.at(ba, latB), q1 = host.path.at(bb, latB);
+      const dIn = Math.hypot(q0.x - pa.x, q0.y - pa.y) * 0.42;
+      const inPts = bezier(pa, { x: pa.x + Math.cos(hP) * dIn, y: pa.y + Math.sin(hP) * dIn }, { x: q0.x - Math.cos(hP) * dIn, y: q0.y - Math.sin(hP) * dIn }, q0, 30);
+      const bay = this.seg(name + ' repair bay', new Path([...inPts, q1]), 1, 'services', 0, 1);
+      bay.laneW = 34; bay.road = name;
+      const fork = this.addT({ type: 'end', from: entry, fromS: entry.len, to: bay, toS: 0, side: 1, latShift: 0, label: `${name} repair bay`, kind: 'link', dir: 'S', pen: REPAIR_BAY_TIME });
+      fork.svc = svc;
+      const m2 = m + 900;
+      const p4 = this.auxPt(host, m2, 1);
+      const d3 = Math.hypot(p4.x - q1.x, p4.y - q1.y) * 0.42;
+      const bayOut = this.seg(name + ' repair out', new Path(bezier(q1, { x: q1.x + Math.cos(hP) * d3, y: q1.y + Math.sin(hP) * d3 }, { x: p4.x - Math.cos(p4.h) * d3, y: p4.y - Math.sin(p4.h) * d3 }, p4, 60)), 1, 'ramp', 0, 3);
+      bayOut.road = name;
+      bay.endT = this.addT({ type: 'end', from: bay, fromS: bay.len, to: bayOut, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
+      this.mergeOnto(bayOut, host, m2, 1, 560);
+      const stopS = bay.len - 60, sp = bay.path.at(stopS);
+      svc.bay = { id: `${id}:bay`, facility: svc, seg: bay, stopS, x: sp.x, y: sp.y, h: sp.h };
+      bay.bay = svc.bay;
+    }
     const big = pumps > 2;
-    this.signs.push({ ...this.place(host, s0 - 1500), kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title: big ? 'Fuel & services' : 'Fuel stop', sub: `${name}  1 km`, arrow: 45, icon: 'fuel' }] });
-    this.signs.push({ seg: host, s: s0 + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Fuel', sub: name, arrow: 45, icon: 'fuel' }] });
+    const title = repair ? FACILITY_NAME['fuel-repair'] : big ? 'Fuel & services' : FACILITY_NAME.fuel;
+    this.signs.push({ ...this.place(host, s0 - 1500), kind: 'gantry', side: 1, panels: [{ side: 'R', color: BLUE, title, sub: `${name}  1 km`, arrow: 45, icon: repair ? 'repair' : 'fuel' }] });
+    this.signs.push({ seg: host, s: s0 + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: repair ? FACILITY_NAME['fuel-repair'] : 'Fuel', sub: name, arrow: 45, icon: repair ? 'repair' : 'fuel' }] });
     return svc;
   }
   private laybyAt(seg: Seg, s0: number) {
@@ -306,10 +435,11 @@ export class Network {
     seg.aux.push(aux);
     const p = seg.path.at(s0 + 270, seg.laneLat(seg.lanes));
     const name = `${seg.road} lay-by ${this.laybys.filter((l) => l.seg.road === seg.road).length + 1}`;
+    const id = `layby:${slug(name.replace(' lay-by', ''))}`;
     // a few hitch-hikers wait at most lay-bys; more drift in over time after a pickup
     const waiting = Math.random() < 0.25 ? 0 : 1 + Math.floor(Math.random() * 3);
-    this.laybys.push({ seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
-    this.signs.push({ ...this.place(seg, s0 - 500), kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: 'Lay-by', sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
+    this.laybys.push({ id, seg, aux, x: p.x, y: p.y, h: p.h, name, waiting, refillT: 0 });
+    this.signs.push({ ...this.place(seg, s0 - 500), kind: 'side', side: 1, panels: [{ side: 'R', color: BLUE, title: FACILITY_NAME.layby, sub: 'Passengers · 500 m', arrow: 45, icon: 'P' }] });
   }
   private crossing(r: Road, x: number, y: number, name: string) {
     const sc = r.c.nearest(x, y).s;
@@ -355,6 +485,142 @@ export class Network {
     }
     this.signs.push({ seg, s: tl.fromS + 50, kind: 'side', side: -1, panels: [{ side: 'L', color: GREEN, title: tl.label, arrow: -45 }] });
     this.signs.push({ seg, s: tr.fromS + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: tr.label, arrow: 45 }] });
+  }
+
+  /** A level-0 slip road along a bezier whose ends leave and arrive along the carriageways they join (`c0`, `c3`: handle lengths). */
+  private slip(name: string, p0: Pose, c0: number, p3: Pose, c3: number, limit: number): Seg {
+    const d0 = dirv(p0.h), d3 = dirv(p3.h);
+    const pts = bezier(p0, { x: p0.x + d0.x * c0, y: p0.y + d0.y * c0 }, { x: p3.x - d3.x * c3, y: p3.y - d3.y * c3 }, p3, 140);
+    return this.seg(name, new Path(pts), 1, 'ramp', 0, limit);
+  }
+
+  /**
+   * Kestrel Link: a 2-lane link road from a gate at Kestrel Station north to a grade-separated junction near the middle of
+   * Polar Express, with all four turns. The right turns are level slip roads on the outer sides: the link's northbound
+   * carriageway drops its outer lane and carries on as the slip to Polar Express east, and the slip from Polar Express east
+   * becomes the link's southbound carriageway. The left turns leave and join on the inner sides and fly over Polar
+   * Express, as at the central interchange.
+   */
+  private kestrelLink(kestrel: Station, polar: Road, harbor: Station, glacier: Station) {
+    const link = this.road('Kestrel Link', [{ x: 900, y: -17000 }, { x: 900, y: -17950 }, { x: 900, y: -18900 }], 2, 2);
+    const north = link.f[0], south = link.r[0];
+    for (const seg of [north, south]) { seg.limit = 4; seg.stationZone = 1800; seg.localOK = true; }
+    north.depStation = kestrel; kestrel.dep.push(north);
+    south.arrStation = kestrel; kestrel.arr.push(south);
+    this.spawnSegs.push({ seg: north, rate: 2.4, mitesOnly: false });
+    const east = polar.f[0], west = polar.r[0];
+    const sE = east.path.nearest(900, -19400).s, sW = west.path.nearest(900, -19400).s;
+
+    // right turn north → Polar Express east: the outer lane drops and lane 0 carries on into the slip road
+    const mE = sE + 1300;
+    const toEast = this.slip(`Kestrel Link ramp ${glacier.name}`, north.path.at(north.len, north.laneLat(0)), 250, this.auxPt(east, mE, 1), 900, 3);
+    north.drop = north.lanes - toEast.lanes; north.next = toEast; toEast.prev = north;
+    north.endT = this.addT({ type: 'end', from: north, fromS: north.len, to: toEast, toS: 0, side: 1, latShift: ((north.lanes - toEast.lanes) * LW) / 2, label: glacier.name, kind: 'link', dir: 'S' });
+    this.mergeOnto(toEast, east, mE, 1, 560);
+
+    // right turn Polar Express east → south: the slip road becomes the link's southbound carriageway, gaining its outer lane
+    const xE = sE - 1400;
+    const fromEast = this.slip(`Polar Express ramp ${kestrel.name}`, this.auxPt(east, xE, 1), 900, south.path.at(0, south.laneLat(0)), 250, 3);
+    this.exitTo(east, xE, 1, 900, fromEast, kestrel.name, 'jct');
+    south.gain = south.lanes - fromEast.lanes; fromEast.next = south; south.prev = fromEast;
+    fromEast.endT = this.addT({ type: 'end', from: fromEast, fromS: fromEast.len, to: south, toS: 0, side: 1, latShift: ((fromEast.lanes - south.lanes) * LW) / 2, label: link.name, kind: 'link', dir: 'S' });
+
+    // left turns, on the inner sides, over Polar Express
+    const xN = north.len - TAPER - 60;
+    this.ramp(north, xN, -1, west, sW + 1300, -1, 0.55, { level: 2, limit: 3, label: harbor.name, kind: 'jct', dir: 'L', decel: 500 });
+    this.ramp(west, sW - 1300, -1, south, TAPER + 100, -1, 0.55, { level: 3, limit: 3, label: kestrel.name, kind: 'jct', dir: 'L' });
+
+    // signs, as at other junctions: two gantries ahead of each exit from Polar Express, and a side sign at it
+    const exitTo = (seg: Seg) => seg.outs.find((t) => t.type === 'exit' && t.to.name.includes('ramp') && t.label === kestrel.name)!;
+    for (const [seg, through] of [[east, glacier], [west, harbor]] as const) {
+      const t = exitTo(seg), side = t.side, panel = side > 0 ? 'R' : 'L', arrow = side * 45;
+      for (const back of [2200, 1250]) this.signs.push({ ...this.place(seg, t.fromS - back), kind: 'gantry', side: 1, panels: [
+        { side: 'C', color: GREEN, title: through.name, sub: `${polar.name} · Straight on`, arrow: 0 },
+        { side: panel, color: GREEN, title: kestrel.name, sub: `${link.name} · Exit ${side > 0 ? 'right' : 'left'}  ${dist(back)}`, arrow },
+      ] });
+      this.signs.push({ seg, s: t.fromS + 50, kind: 'side', side, panels: [{ side: panel, color: GREEN, title: kestrel.name, sub: link.name, arrow }] });
+    }
+    // on the link: the route confirmation at the gate, a gantry before the split and a side sign at the left turn
+    const toWest = north.outs.find((t) => t.type === 'exit')!;
+    for (const s of [380, toWest.fromS - 700]) this.signs.push({ seg: north, s, kind: 'gantry', side: 1, panels: [
+      { side: 'L', color: GREEN, title: harbor.name, sub: `${polar.name} west · Exit left  ${dist(toWest.fromS - s)}`, arrow: -45 },
+      { side: 'R', color: GREEN, title: glacier.name, sub: `${polar.name} east · Keep right`, arrow: 45 },
+    ] });
+    this.signs.push({ seg: north, s: toWest.fromS + 50, kind: 'side', side: -1, panels: [{ side: 'L', color: GREEN, title: harbor.name, arrow: -45 }] });
+    this.signs.push({ seg: toEast, s: 120, kind: 'side', side: 1, panels: [{ side: 'R', color: GREEN, title: glacier.name, arrow: 45 }] });
+    return link;
+  }
+
+  /** a slip road leaving `from` at s on `side`, with an exit lane `decel` long before it */
+  private exitTo(from: Seg, s: number, side: 1 | -1, decel: number, to: Seg, label: string, kind: Trans['kind']): Trans {
+    const ax: Aux = { side, s0: s - decel, s1: s, type: 'exit' };
+    from.aux.push(ax);
+    return (ax.trans = this.addT({ type: 'exit', from, fromS: s, to, toS: 0, side, latShift: 0, label, kind, dir: side > 0 ? 'R' : 'L', aux: ax }));
+  }
+  /** the end of slip road `from` merging onto `to` at s on `side`, with a merge lane `accel` long */
+  private mergeOnto(from: Seg, to: Seg, s: number, side: 1 | -1, accel: number): Trans {
+    const am: Aux = { side, s0: s, s1: s + accel, type: 'merge' };
+    to.aux.push(am);
+    return (from.endT = am.trans = this.addT({ type: 'merge', from, fromS: from.len, to, toS: s, side, latShift: 0, label: to.road, kind: 'link', dir: 'S', aux: am }));
+  }
+
+  /**
+   * Police HQ, on a short dead-end spur west of Kestrel Link. The link's southbound carriageway turns right into it; the
+   * northbound one turns left into it on a flyover over the southbound carriageway. Both lead into a turning loop round
+   * the HQ building, which leaves by a level slip road merging onto the southbound carriageway (towards Kestrel Station)
+   * or by a flyover over both carriageways merging onto the northbound one (towards Polar Express).
+   *
+   * Everything sits clear of the link's own furniture: the northbound left turn's exit lane (s 740–1240) and the lane
+   * drop in its last 600 m, the southbound left merge (s 700–1260) and the lane gain in its first 600 m.
+   */
+  private policeHQ(kestrel: Station, link: Road, polar: Road) {
+    const north = link.f[0], south = link.r[0];
+    const name = FACILITY_NAME['police-hq'], id = `hq:${kestrel.id}`;
+    // in along the north side of the spur, round a turning loop at its west end, and back out along the south
+    const loop = this.seg(name, new Path(catmull([{ x: 470, y: -17800 }, { x: 250, y: -17800 }, { x: 30, y: -17815 }, { x: -130, y: -17750 }, { x: 30, y: -17685 }, { x: 250, y: -17700 }, { x: 470, y: -17700 }], 16)), 1, 'services', 0, 2);
+    loop.road = name;
+    const yIn = loop.path.at(0), stopS = loop.len / 2, mid = loop.path.at(stopS);
+    const h: PoliceHQ = { id, kind: 'police-hq', name, loop, stopS, segs: [loop], x: mid.x, y: mid.y, h: mid.h, where: `Off ${link.name}`, waysOut: [polar.name, kestrel.name] };
+    this.policeHQs.push(h);
+    // southbound: turn right into the spur
+    const xS = 960;
+    const fromSouth = this.slip(`${link.name} ramp ${name} south`, this.auxPt(south, xS, 1), 160, yIn, 200, 2);
+    this.exitTo(south, xS, 1, 280, fromSouth, name, 'services');
+    // northbound: turn left over the southbound carriageway
+    const xN = 660;
+    const fromNorth = this.slip(`${link.name} ramp ${name} north`, this.auxPt(north, xN, -1), 260, yIn, 260, 2);
+    fromNorth.level = 2;
+    this.exitTo(north, xN, -1, 300, fromNorth, name, 'services');
+    for (const r of [fromSouth, fromNorth]) {
+      r.road = name;
+      r.endT = this.addT({ type: 'end', from: r, fromS: r.len, to: loop, toS: 0, side: 1, latShift: 0, label: name, kind: 'link', dir: 'S' });
+      h.segs.push(r);
+    }
+    // out of the loop: towards Polar Express on a flyover over both carriageways, or level towards Kestrel Station
+    const yOut = loop.path.at(loop.len);
+    const toPolar = this.slip(`${name} ramp ${link.name} north`, yOut, 330, this.auxPt(north, 1000, 1), 330, 2);
+    toPolar.level = 3;
+    this.mergeOnto(toPolar, north, 1000, 1, 240);
+    const toKestrel = this.slip(`${name} ramp ${kestrel.name}`, yOut, 200, this.auxPt(south, 1400, 1), 200, 2);
+    this.mergeOnto(toKestrel, south, 1400, 1, 300);
+    loop.endT = this.addT({ type: 'end', from: loop, fromS: loop.len, to: toPolar, toS: 0, side: 1, latShift: 0, label: polar.name, kind: 'link', dir: 'S' });
+    this.addT({ type: 'end', from: loop, fromS: loop.len, to: toKestrel, toS: 0, side: 1, latShift: 0, label: kestrel.name, kind: 'link', dir: 'S' });
+    for (const r of [toPolar, toKestrel]) { r.road = name; h.segs.push(r); }
+    for (const seg of h.segs) seg.hq = h;
+
+    // signs: on each carriageway ahead of the turn and at it, and the two ways out at the end of the loop
+    this.signs.push({ seg: south, s: xS - 600, kind: 'gantry', side: 1, panels: [
+      { side: 'C', color: GREEN, title: kestrel.name, sub: 'Straight on', arrow: 0 },
+      { side: 'R', color: POLICE, title: name, sub: `Exit right  ${dist(600)}`, arrow: 45, icon: 'police' },
+    ] });
+    this.signs.push({ seg: south, s: xS + 50, kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: name, arrow: 45 }] });
+    this.signs.push({ seg: north, s: xN - 450, kind: 'side', side: -1, panels: [{ side: 'L', color: POLICE, title: name, sub: `Exit left  ${dist(450)}`, arrow: -45 }] });
+    // just before the gore, as the flyover passes over the gore itself
+    this.signs.push({ seg: north, s: xN - 60, kind: 'side', side: -1, panels: [{ side: 'L', color: POLICE, title: name, arrow: -45 }] });
+    this.signs.push({ seg: loop, s: loop.len - 160, kind: 'gantry', side: 1, panels: [
+      { side: 'L', color: GREEN, title: polar.name, sub: `${link.name} north`, arrow: -45 },
+      { side: 'R', color: GREEN, title: kestrel.name, sub: `${link.name} south`, arrow: 45 },
+    ] });
   }
 
   private build() {
@@ -405,6 +671,8 @@ export class Network {
     this.gates(CR, ember, terra, 4.2);
     for (const r of [AU, HR, FL, SH]) for (const s of both(r)) s.localOK = true;
     for (const r of [IR, CR]) for (const s of both(r)) { s.trucky = true; s.density = 0.55; }
+    // the Kestrel route is posted below Polar Express, so the longer direct road is the faster legal route (ADR 0001)
+    for (const r of [HR, FL]) for (const s of both(r)) s.limit = 4;
 
     // Outer orbital links have their own station gates: journeys need not traverse the central hubs.
     const polar = this.road('Polar Express', P([[-15000, -15500], [-15000, -17500], [-12000, -18500], [-6500, -19000], [0, -19500], [6500, -19000], [12000, -18000], [15000, -16700], [15000, -15000]]), 3, 3);
@@ -438,13 +706,15 @@ export class Network {
     this.crossing(M2, 900, -12400, 'Dockside Avenue');
 
     // services, lay-bys, U-turns, speed checks (distances are along the whole carriageway)
-    const svc = (segs: Seg[], s: number, pumps: number, name: string) => { const l = this.locate(segs, s); this.servicesAt(l.seg, l.s, pumps, name); };
+    const svc = (segs: Seg[], s: number, pumps: number, name: string, repair = false) => { const l = this.locate(segs, s); this.servicesAt(l.seg, l.s, pumps, name, repair); };
     const lay = (segs: Seg[], s: number) => { const l = this.locate(segs, s); this.laybyAt(l.seg, l.s); };
     const utn = (segs: Seg[], s: number, back: Seg[], label: string) => { const l = this.locate(segs, s); this.uturn(l.seg, l.s, back, label); };
     const cam = (segs: Seg[], s: number) => {
       const l = this.locate(segs, s), seg = l.seg;
       const p = seg.path.at(l.s, seg.laneLat(seg.lanes) + 60);
-      this.cameras.push({ seg, s: l.s, x: p.x, y: p.y });
+      const rd = this.roads.find((r) => r.f === segs || r.r === segs)!;
+      const id = `cam-${slug(rd.name)}-${rd.f === segs ? 'f' : 'r'}-${Math.round(s)}`;
+      this.cameras.push({ id, seg, s: l.s, x: p.x, y: p.y });
       this.signs.push({ ...this.place(seg, l.s - 800), kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
     };
     svc(M1.f, 5200, 4, 'Nebula Services');
@@ -484,29 +754,38 @@ export class Network {
     lay(OR.r, 17000);
     svc(OR.r, 12000, 2, 'Quarry Fuel');
 
-    const furnish = (rd: Road, from: Station, to: Station, names: [string, string], pumps: [number, number]) => {
+    /** `repairAt`: the forward facility is a Fuel & Repair, with its exit at this fraction of the road (it is longer) */
+    const furnish = (rd: Road, from: Station, to: Station, names: [string, string], pumps: [number, number], repairAt?: number) => {
       const L = rd.fLen;
       const q = (x: number) => Math.round((L * x) / 100) * 100;
       utn(rd.f, q(0.82), rd.r, from.name);
       utn(rd.r, q(0.82), rd.f, to.name);
       lay(rd.f, q(0.1));
       lay(rd.f, q(0.25));
-      svc(rd.f, q(0.45), pumps[0], names[0]);
+      svc(rd.f, q(repairAt ?? 0.45), pumps[0], names[0], repairAt !== undefined);
       lay(rd.r, q(0.12));
       lay(rd.r, q(0.32));
       svc(rd.r, q(0.6), pumps[1], names[1]);
       lay(rd.r, q(0.75));
-      cam(rd.f, q(0.62));
-      cam(rd.r, q(0.5));
+      // Frost Line has no cameras: the Kestrel route is the lower-risk road for drivers who push the limit
+      if (rd !== FL) { cam(rd.f, q(0.62)); cam(rd.r, q(0.5)); }
     };
     furnish(AU, terra, harbor, ['Aurora Fuel', 'Skyline Stop'], [3, 2]);
-    furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3]);
-    furnish(FL, kestrel, glacier, ['Frost Fuel', 'Icicle Stop'], [2, 2]);
+    furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3], 0.39);
+    furnish(FL, kestrel, glacier, ['Frost Fuel', 'Icicle Stop'], [2, 2], 0.38);
     furnish(IR, glacier, jove, ['Glacier Pumps', 'Sleet Stop'], [2, 2]);
     furnish(SH, vesta, ember, ['Slag Services', 'Furnace Fuel'], [3, 3]);
     furnish(CR, ember, terra, ['Cinder Stop', 'Ashfall Fuel'], [2, 2]);
 
     cam(M1.f, 19300); cam(M1.r, 11300); cam(M2.f, 19400); cam(M2.r, 11200);
+
+    // Polar Express: the fast corridor road has cameras and lay-bys but no fuel. The middle stays clear for a junction.
+    const pq = (segs: Seg[], x: number) => Math.round((segs.reduce((a, sg) => a + sg.len, 0) * x) / 100) * 100;
+    lay(polar.f, pq(polar.f, 0.2)); cam(polar.f, pq(polar.f, 0.3)); lay(polar.f, pq(polar.f, 0.7)); cam(polar.f, pq(polar.f, 0.8));
+    lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
+    const link = this.kestrelLink(kestrel, polar, harbor, glacier);
+    this.policeHQ(kestrel, link, polar);
+    this.corridors.push({ stations: [harbor.id, glacier.id] });
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
     // Opposing directions use separate decks where the inner slips cross the other carriageway.
@@ -550,13 +829,14 @@ export class Network {
     // welcome / route confirmation gantries at departures
     for (const st of this.stations) for (const seg of st.dep) {
       let last = seg, total = seg.len; while (last.next) { last = last.next; total += last.len; }
-      const dest = last.arrStation!;
+      const dest = last.arrStation;
+      if (!dest) continue; // a link road ends at a junction and carries its own signs
       this.signs.push({ seg, s: 380, kind: 'gantry', side: 1, panels: [{ side: 'C', color: GREEN, title: seg.road === 'M1' || seg.road === 'M2' ? seg.name : dest.name, sub: seg.road === 'M1' || seg.road === 'M2' ? `${dest.name}  ${dist(total)}` : `${seg.road}  ${dist(total)}`, arrow: 0 }] });
     }
 
     // turning around by docking at a station (router only — never applied automatically)
     for (const st of this.stations) for (const a of st.arr) for (const d of st.dep) {
-      this.addT({ type: 'end', from: a, fromS: a.len - 150, to: d, toS: 150, side: 1, latShift: 0, label: st.name, kind: 'dock', dir: 'U', pen: 2500 });
+      this.addT({ type: 'end', from: a, fromS: a.len - 150, to: d, toS: 150, side: 1, latShift: 0, label: st.name, kind: 'dock', dir: 'U', pen: PASS_THROUGH_TIME });
     }
     this.computeLimits();
     this.validate();
@@ -569,11 +849,11 @@ export class Network {
       for (let i = 0; i < n; i++) {
         let lim = seg.limit;
         if (seg.kind === 'motorway') {
+          // a motorway is posted at its road's limit (5 unless lowered), and lower near the centre, crossings and stations
           const p = seg.path.at(i * 100);
-          lim = 5;
-          if (Math.hypot(p.x, p.y) < 4300) lim = 4;
+          if (Math.hypot(p.x, p.y) < 4300) lim = Math.min(lim, 4);
           for (const c of this.crossings) if (Math.hypot(p.x - c.x, p.y - c.y) < 2300) lim = 3;
-          for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < 3300) lim = 3;
+          for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < seg.stationZone) lim = 3;
         }
         seg.limits[i] = lim;
       }
@@ -597,11 +877,156 @@ export class Network {
     }
   }
 
+  /** the facility (services, Fuel & Repair, repair bay or lay-by) with this stable ID */
+  facility(id: string): Services | RepairBay | Layby | PoliceHQ | undefined {
+    for (const sv of this.services) { if (sv.id === id) return sv; if (sv.bay?.id === id) return sv.bay; }
+    return this.laybys.find((l) => l.id === id) ?? this.policeHQs.find((h) => h.id === id);
+  }
+
+  /** every section of seg's carriageway, from its start */
+  carriageway(seg: Seg): Seg[] {
+    let first = seg; while (first.prev) first = first.prev;
+    const out: Seg[] = [];
+    for (let at: Seg | null = first; at; at = at.next) out.push(at);
+    return out;
+  }
+  /** the road name and direction of seg's carriageway, as the sector map shows them */
+  private describeCarriageway(seg: Seg): { road: string; carriageway: string; towards: string | null } {
+    const chain = this.carriageway(seg);
+    const towards = chain[chain.length - 1].arrStation?.name ?? null;
+    // M1 and M2 name their carriageways (M1 East); elsewhere a carriageway is known by its road and where it goes
+    const named = seg.name !== `${seg.road} F` && seg.name !== `${seg.road} R` && seg.name !== seg.road;
+    return { road: seg.road, carriageway: named ? seg.name : seg.road, towards };
+  }
+
+  /**
+   * The next exit a rig at s on seg can still take on its carriageway (a junction, a facility or a turn back), looking on
+   * into the following sections, with how far ahead it is and where it leaves. As in routing, an exit less than 90 m
+   * ahead only counts when the rig is already in its exit lane (`auxSide`). Null off a road or past the last exit.
+   */
+  nextExit(seg: Seg, s: number, auxSide = 0): NextExit | null {
+    if (seg.kind !== 'motorway') return null;
+    for (let at: Seg | null = seg, off = 0; at; off += at.len, at = at.next) {
+      let best: Trans | null = null;
+      for (const t of at.outs) {
+        if (t.type !== 'exit') continue;
+        const ahead = off + t.fromS - s;
+        if (ahead < -1 || (ahead < 90 && auxSide !== t.side)) continue;
+        if (!best || t.fromS < best.fromS) best = t;
+      }
+      if (best) {
+        const p = this.auxPt(at, best.fromS, best.side);
+        return { trans: best, label: best.svc?.name ?? best.label, kind: best.kind, side: best.side, d: off + best.fromS - s, x: p.x, y: p.y };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The lane closures on the network now: roadworks sites, and incidents from the moment their cordon goes up until it
+   * is taken down. Read from the closed lanes on each section, so a cleared incident is gone at once.
+   */
+  closures(): ClosureInspection[] {
+    const groups = new Map<unknown, { seg: Seg; s0: number; s1: number; lane: number }[]>();
+    for (const seg of this.segs) for (const b of seg.blocks) {
+      let g = groups.get(b.inc);
+      if (!g) groups.set(b.inc, (g = []));
+      g.push({ seg, s0: b.s0, s1: b.s1, lane: b.lane });
+    }
+    const out: ClosureInspection[] = [];
+    for (const [inc, blocks] of groups) {
+      const what = inc as { kind?: string; sign?: string };
+      const seg = blocks[0].seg, lanes = seg.lanes;
+      const closed = [...new Set(blocks.map((b) => b.lane))].sort((a, b) => a - b);
+      const open = Array.from({ length: lanes }, (_, i) => i).filter((l) => !closed.includes(l));
+      const extent: ClosureInspection['extent'] = [];
+      for (const b of blocks) {
+        const e = extent.find((x) => x.seg === b.seg);
+        if (e) { e.s0 = Math.min(e.s0, b.s0); e.s1 = Math.max(e.s1, b.s1); } else extent.push({ seg: b.seg, s0: b.s0, s1: b.s1 });
+      }
+      const main = extent.reduce((a, b) => (b.s1 - b.s0 > a.s1 - a.s0 ? b : a)), mid = main.seg.path.at((main.s0 + main.s1) / 2);
+      const roadworks = what.kind === 'roadworks';
+      out.push({
+        kind: roadworks ? 'roadworks' : 'incident', ...(roadworks ? {} : { incident: what.kind === 'accident' ? 'accident' : 'breakdown' }),
+        ...this.describeCarriageway(seg), lanes, closed, open,
+        status: roadworks && what.sign ? what.sign : closedLanesText(closed, lanes), x: mid.x, y: mid.y, extent,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * What is under a world point, for inspection on the sector map: the nearest lane closure (incident or roadworks),
+   * facility or road, preferring them in that order when the point is on more than one. `radius` is how far from the point to look (a finger's width on the map), in world units.
+   */
+  inspect(x: number, y: number, radius = 0): Inspection | null {
+    let hit: { d: number; c: ClosureInspection } | null = null;
+    for (const c of this.closures()) for (const e of c.extent) {
+      const half = (e.seg.lanes * e.seg.laneW) / 2;
+      for (let s = e.s0; s <= e.s1 + 49; s += 50) {
+        const p = e.seg.path.at(Math.min(s, e.s1)), d = Math.max(0, Math.hypot(p.x - x, p.y - y) - half);
+        if (d <= radius && (!hit || d < hit.d)) hit = { d, c };
+      }
+    }
+    let fac: { d: number; info: FacilityInspection } | null = null;
+    const near = (fx: number, fy: number, reach: number, info: () => FacilityInspection) => {
+      const d = Math.max(0, Math.hypot(fx - x, fy - y) - reach);
+      if (d <= radius && (!fac || d < fac.d)) fac = { d, info: info() };
+    };
+    for (const sv of this.services) near(sv.x, sv.y, FACILITY_REACH, () => ({
+      kind: 'facility', id: sv.id, name: sv.name, facility: sv.kind, x: sv.x, y: sv.y,
+      services: [`Fuel · ${sv.size} pump${sv.size === 1 ? '' : 's'}`, ...(sv.bay ? ['Repair bay'] : [])],
+    }));
+    for (const h of this.policeHQs) near(h.x, h.y, HQ_REACH, () => ({
+      kind: 'facility', id: h.id, name: h.name, facility: h.kind, where: h.where, x: h.x, y: h.y,
+      services: ['Open to all drivers', `Leave towards ${h.waysOut[0]} or ${h.waysOut[1]}`],
+    }));
+    for (const lb of this.laybys) near(lb.x, lb.y, LAYBY_REACH, () => ({
+      kind: 'facility', id: lb.id, name: lb.name, facility: 'layby', x: lb.x, y: lb.y, services: [FACILITY_NAME.layby, 'Passengers'],
+    }));
+    let best: { d: number; level: number; seg: Seg; s: number } | null = null;
+    for (const seg of this.segs) {
+      if (seg.kind !== 'motorway' && seg.kind !== 'avenue') continue;
+      const half = (seg.lanes * seg.laneW) / 2 + (seg.shoulder ? LW : 0), r = half + radius;
+      if (x < seg.path.minX - r || x > seg.path.maxX + r || y < seg.path.minY - r || y > seg.path.maxY + r) continue;
+      const n = seg.path.nearest(x, y), d = Math.max(0, n.d - half);
+      if (d > radius) continue;
+      if (!best || d < best.d - 1 || (d <= best.d + 1 && seg.level > best.level)) best = { d, level: seg.level, seg, s: n.s };
+    }
+    // the nearest wins; on a tie (the point is on more than one) a closure, then a facility, is picked over the road
+    const h = hit as { d: number; c: ClosureInspection } | null, f = fac as { d: number; info: FacilityInspection } | null;
+    const b = best as { d: number; seg: Seg; s: number } | null;
+    if (h && (!f || h.d <= f.d) && (!b || h.d <= b.d)) return h.c;
+    if (f && (!b || f.d <= b.d)) return f.info;
+    if (!b) return null;
+    const { seg, s } = b, chain = this.carriageway(seg), at = seg.path.at(s);
+    return {
+      kind: 'road', seg, ...this.describeCarriageway(seg), limit: seg.limitAt(s),
+      cameras: this.cameras.filter((c) => chain.includes(c.seg)), x: at.x, y: at.y,
+    };
+  }
+
+  /** the corridor joining two stations (by ID), in either direction */
+  corridor(a: string, b: string): Corridor | undefined {
+    return this.corridors.find(({ stations: [x, y] }) => (x === a && y === b) || (x === b && y === a));
+  }
+
   stationGoals(st: Station): Goal[] { return st.arr.map((seg) => ({ seg, s: seg.len - 150 })); }
 
-  /** Distance-equivalent cost of the actual traversed interval, not the whole segment. */
+  /** Seconds to drive [s0, s1] of seg at its posted limit. */
+  legalTime(seg: Seg, s0: number, s1: number): number {
+    let t = 0;
+    for (let a = s0; a < s1;) {
+      const b = Math.min(s1, (Math.floor(a / 100) + 1) * 100);
+      t += (b - a) / (SPEEDS[seg.limitAt(a)] || SPEEDS[1]);
+      a = b;
+    }
+    return t;
+  }
+
+  /** Travel time in seconds over the actual traversed interval, not the whole segment, plus live delays when asked. */
   private routingCost(seg: Seg, s0: number, s1: number, avoidTraffic: boolean): number {
-    let cost = Math.max(0, s1 - s0);
+    let cost = this.legalTime(seg, s0, s1);
     if (!avoidTraffic || s1 <= s0) return cost;
     const blocks = seg.blocks.filter((b) => Number.isInteger(b.lane) && b.lane >= 0 && b.lane < seg.lanes && b.s0 < s1 && b.s1 > s0);
     // Sweep clipped block endpoints, counting each closed lane once even for overlapping incidents.
@@ -610,7 +1035,7 @@ export class Network {
       const a = points[i - 1], b = points[i];
       const closed = new Set(blocks.filter((block) => block.s0 < b && block.s1 > a).map((block) => block.lane)).size;
       // Finite penalties preserve a last-resort route if no usable alternative exists.
-      cost += (b - a) * (closed === seg.lanes ? 40 : 6 * closed / (seg.lanes - closed));
+      if (closed) cost += this.legalTime(seg, a, b) * (closed === seg.lanes ? 40 : 6 * closed / (seg.lanes - closed));
     }
     // Ignore the player's speed, parked/service/auxiliary traffic, and isolated slow trucks.
     const traffic = seg.veh.filter((v) => !v.dead && !v.isPlayer && v.s >= s0 && v.s < s1 &&
@@ -618,20 +1043,28 @@ export class Network {
       ['drive', 'held', 'stopped', 'broken', 'crashed'].includes(v.state));
     const slow = traffic.filter((v) => v.v < v.vDes * 0.45);
     if (slow.length >= Math.max(4, seg.lanes) && slow.length >= traffic.length / 2) {
-      cost += slow.reduce((sum, v) => sum + 800 * (1 - Math.max(0, v.v) / v.vDes), 0);
+      cost += slow.reduce((sum, v) => sum + JAM_DELAY * (1 - Math.max(0, v.v) / v.vDes), 0);
     }
     return cost;
   }
 
-  /** Opt in to live congestion costs; leave false for geometric job distances/prices. */
-  route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false): Route | null {
+  /**
+   * Fastest route by travel time at the posted limit. Opt in to live congestion costs; leave false for legal travel times.
+   * It never passes through Police HQ: it only drives into HQ when HQ is one of the goals.
+   */
+  route(seg: Seg, s: number, goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): Route | null {
+    /** `avoid`: roads the route may not drive on (it fails if it starts on one) */
+    // Police HQ is never a through route: its roads are only driven into when it is a goal (or the route starts there)
+    const toHQ = goals.some((g) => g.seg.hq);
+    const banned = (t: Trans) => !!avoid?.has(t.to.road) || (!!t.to.hq && !t.from.hq && !toHQ);
+    if (avoid?.has(seg.road)) return null;
     const cost = (road: Seg, from: number, to: number) => this.routingCost(road, from, to, avoidTraffic);
     let best = Infinity, bestT: Trans | null = null, bestG: Goal | null = null, direct = false;
     for (const g of goals) if (g.seg === seg && g.s >= s - 1 && cost(seg, s, g.s) < best) { best = cost(seg, s, g.s); bestG = g; direct = true; }
     const dist = new Map<Trans, number>(), prev = new Map<Trans, Trans | null>(), done = new Set<Trans>();
     for (const t of seg.outs) {
       const ahead = t.fromS - s;
-      if (ahead < -1) continue;
+      if (ahead < -1 || banned(t)) continue;
       if (t.type === 'exit' && ahead < 90 && auxSide !== t.side) continue;
       dist.set(t, cost(seg, s, t.fromS) + (t.pen ?? 0)); prev.set(t, null);
     }
@@ -643,7 +1076,7 @@ export class Network {
       const ns = cur.to, s0 = cur.toS;
       for (const g of goals) if (g.seg === ns && g.s >= s0 && cd + cost(ns, s0, g.s) < best) { best = cd + cost(ns, s0, g.s); bestG = g; bestT = cur; direct = false; }
       for (const u of ns.outs) {
-        if (u.fromS < s0 + (u.type === 'exit' ? 60 : -1)) continue;
+        if (u.fromS < s0 + (u.type === 'exit' ? 60 : -1) || banned(u)) continue;
         const nd = cd + cost(ns, s0, u.fromS) + (u.pen ?? 0);
         if (nd < (dist.get(u) ?? Infinity)) { dist.set(u, nd); prev.set(u, cur); }
       }
@@ -652,10 +1085,101 @@ export class Network {
     const list: Trans[] = [];
     if (!direct) { let t: Trans | null = bestT; while (t) { list.unshift(t); t = prev.get(t) ?? null; } }
     const diverted = seg.road.includes('Bypass') || list.some((t) => t.label.includes('Bypass') || t.to.road.includes('Bypass'));
-    return { trans: list, goal: bestG, cost: best, diverted };
+    let distance = 0, at = s;
+    for (const t of list) { distance += t.fromS - at; at = t.toS; }
+    distance += bestG.s - at;
+    return { trans: list, goal: bestG, cost: best, distance, diverted };
   }
 
-  routePoints(r: Route, seg: Seg, s: number, step = 80): Pt[] {
+  /**
+   * The places a waypoint at a map point (x, y) can mean: the nearest point on each carriageway section within `radius`
+   * (both directions of a road, so a route may reach it either way), dropping any much further than the closest one so a
+   * waypoint on a road does not also mean a slip road beside it. Facilities (services, repair bays and Police HQ with
+   * its slip roads) are not waypoints.
+   */
+  waypointGoals(x: number, y: number, radius = 400): Goal[] {
+    const near: { g: Goal; d: number }[] = [];
+    for (const seg of this.segs) {
+      if (seg.kind === 'services' || seg.hq || seg.path.maxX < x - radius || seg.path.minX > x + radius || seg.path.maxY < y - radius || seg.path.minY > y + radius) continue;
+      const n = seg.path.nearest(x, y);
+      if (n.d <= radius) near.push({ g: { seg, s: n.s }, d: n.d });
+    }
+    const best = Math.min(...near.map((c) => c.d));
+    return near.filter((c) => c.d <= best + 150).sort((a, b) => a.d - b.d).map((c) => c.g);
+  }
+
+  /**
+   * The fastest route that passes one of the waypoint places `via` (from `waypointGoals`) and then reaches one of `goals`;
+   * with no goals it ends at the waypoint. Its trans list is the two legs end to end, so it is followed, drawn and costed
+   * like any other route. `avoid` keeps both legs off the named roads, as for `route`. Null when no waypoint place can be
+   * reached, or none leads on to a goal.
+   */
+  routeVia(seg: Seg, s: number, via: Goal[], goals: Goal[], auxSide = 0, avoidTraffic = false, avoid?: ReadonlySet<string>): ViaRoute | null {
+    let best: ViaRoute | null = null;
+    for (const v of via) {
+      const a = this.route(seg, s, [v], auxSide, avoidTraffic, avoid);
+      if (!a) continue;
+      const b = goals.length ? this.route(v.seg, v.s, goals, 0, avoidTraffic, avoid) : null;
+      if (goals.length && !b) continue;
+      const r: ViaRoute = b
+        ? { trans: [...a.trans, ...b.trans], goal: b.goal, cost: a.cost + b.cost, distance: a.distance + b.distance, diverted: a.diverted || b.diverted, via: v }
+        : { ...a, via: v };
+      if (!best || r.cost < best.cost) best = r;
+    }
+    return best;
+  }
+
+  /**
+   * Route comparison: the fastest legal route from any of `starts` to the goals, and the fastest legal route that never
+   * drives on the first one's main road. Each comes with the cameras and fuel and repair facilities along it. There is
+   * only one option when nothing avoids the main road, and none when the goals cannot be reached.
+   */
+  compareRoutes(starts: Goal[], goals: Goal[]): RouteOption[] {
+    const best = (avoid?: ReadonlySet<string>) => {
+      let out: { start: Goal; route: Route } | null = null;
+      for (const st of starts) {
+        const r = this.route(st.seg, st.s, goals, 0, false, avoid);
+        if (r && (!out || r.cost < out.route.cost)) out = { start: st, route: r };
+      }
+      return out && this.describeRoute(out.start, out.route);
+    };
+    const fast = best();
+    if (!fast) return [];
+    const alt = best(new Set([fast.mainRoad]));
+    if (!alt) return [fast];
+    // two routes through the same station(s) are told apart by the road each mainly drives (a picked route is kept by name)
+    if (alt.name === fast.name) for (const o of [fast, alt]) o.name = `${o.mainRoad} via ${o.passThrough.map((st) => st.name).join(' and ')}`;
+    return [fast, alt];
+  }
+
+  /** the stretches of carriageway a route drives, in order */
+  routeStretches(r: Pick<Route, 'trans' | 'goal'>, seg: Seg, s: number): { seg: Seg; s0: number; s1: number }[] {
+    const out: { seg: Seg; s0: number; s1: number }[] = [];
+    let cs = seg, ss = s;
+    for (const t of r.trans) { out.push({ seg: cs, s0: ss, s1: t.fromS }); cs = t.to; ss = t.toS; }
+    out.push({ seg: cs, s0: ss, s1: r.goal.s });
+    return out;
+  }
+
+  private describeRoute(start: Goal, route: Route): RouteOption {
+    const parts = this.routeStretches(route, start.seg, start.s);
+    const on = (seg: Seg, s: number) => parts.some((p) => p.seg === seg && s >= p.s0 && s <= p.s1);
+    const byRoad = new Map<string, number>(), roads: string[] = [];
+    for (const p of parts) {
+      if (!p.seg.road || p.seg.kind !== 'motorway') continue;
+      byRoad.set(p.seg.road, (byRoad.get(p.seg.road) ?? 0) + Math.max(0, p.s1 - p.s0));
+      if (roads[roads.length - 1] !== p.seg.road) roads.push(p.seg.road);
+    }
+    const mainRoad = [...byRoad].sort((a, b) => b[1] - a[1])[0]?.[0] ?? start.seg.road;
+    const passThrough = route.trans.filter((t) => t.kind === 'dock').map((t) => t.from.arrStation!).filter(Boolean);
+    const order = (seg: Seg, s: number) => { const i = parts.findIndex((p) => p.seg === seg && s >= p.s0 && s <= p.s1); return i * 1e6 + s; };
+    const cameras = this.cameras.filter((c) => on(c.seg, c.s)).sort((a, b) => order(a.seg, a.s) - order(b.seg, b.s));
+    const facilities = this.services.filter((sv) => on(sv.exit.from, sv.exit.fromS)).sort((a, b) => order(a.exit.from, a.exit.fromS) - order(b.exit.from, b.exit.fromS));
+    const name = passThrough.length ? `Via ${passThrough.map((st) => st.name).join(' and ')}` : mainRoad;
+    return { name, start, route, mainRoad, roads, passThrough, cameras, facilities };
+  }
+
+  routePoints(r: Pick<Route, 'trans' | 'goal'>, seg: Seg, s: number, step = 80): Pt[] {
     const pts: Pt[] = [];
     let cs = seg, ss = s;
     for (const t of r.trans) {

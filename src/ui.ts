@@ -1,13 +1,13 @@
 import Phaser from 'phaser';
-import { WorldScene } from './world';
+import { WorldScene, type RepairQuote } from './world';
 import { G, SPEEDS, CLASSES, RANKS, Job, bus, rankOf, money, distTxt, save, toast, UP, UPGRADES, nextUpgrade, PAX_MAX, PAX_PAY } from './state';
 import { Station } from './network';
 import { clamp } from './geom';
 import { sfx } from './audio';
 import { ZoneDef } from './zones';
 import { radio } from './radio';
+import { FONT } from './render';
 
-const FONT = '"Trebuchet MS", "Segoe UI", Arial, sans-serif';
 const PANEL = 0x111a33, EDGE = 0x3c5a9a, CYAN = 0x5ad8ff;
 
 type Btn = { c: Phaser.GameObjects.Container; g: Phaser.GameObjects.Graphics; t: Phaser.GameObjects.Text; w: number; h: number; draw: (fill: number, stroke: number, alpha?: number) => void };
@@ -31,7 +31,10 @@ export class UIScene extends Phaser.Scene {
   toastBox!: Phaser.GameObjects.Container; toastT!: Phaser.GameObjects.Text; toastG!: Phaser.GameObjects.Graphics; toastTimer = 0;
   hintBox!: Phaser.GameObjects.Container; hintT!: Phaser.GameObjects.Text; hintG!: Phaser.GameObjects.Graphics; hintTimer = 0;
   muteBtn!: Btn;
+  mapBtn!: Btn;
   modal: Phaser.GameObjects.Container | null = null;
+  /** the repair bay quote on screen, if any: it is answered with its buttons, Enter (authorise) or Esc (decline) */
+  quoteOpen = false;
   navC = { x: 0, y: 0, R: 100 };
   banner = { x: 0, y: 0, w: 0, h: 0 };
   last: Record<string, string> = {};
@@ -59,8 +62,11 @@ export class UIScene extends Phaser.Scene {
     bus.on('toast', (m: string, c: string, d: number) => this.showToast(m, c, d));
     bus.on('hint', (m: string) => this.showHint(m));
     bus.on('hintHide', () => { if (this.hintTimer > 0.5) this.hintTimer = 0.5; });
+    bus.on('repairQuote', (q: RepairQuote) => this.openQuote(q));
     bus.on('board', (st: Station, jobs: Job[], summary: any) => { this.pendingBoard = { st, jobs, summary }; this.time.delayedCall(summary ? 900 : 200, () => this.openBoard()); });
     bus.on('zone', (z: ZoneDef) => { this.pendingZone = z; });
+    // the sector map covers the whole screen: hide the HUD under it and bring it back as it was
+    bus.on('sectormap', (open: boolean) => this.root.setVisible(!open));
     bus.on('police', (reason: string, fine: number) => this.showToast(fine > 0 ? `🚓 Pulled over: ${reason} — fined ${money(fine)}` : `🚓 Pulled over: ${reason} — just a warning this time!`, '#ffb4b4', 5000));
     const kb = this.input.keyboard!;
     kb.on('keydown', (e: KeyboardEvent) => this.onKey(e));
@@ -68,19 +74,27 @@ export class UIScene extends Phaser.Scene {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (e.key === 'Escape' || e.key.toLowerCase() === 'p') { this.togglePause(); return; }
+    if (this.quoteOpen) {
+      if (e.key === 'Enter' || e.key === ' ') this.answerQuote(true);
+      else if (e.key === 'Escape' || e.key === 'Backspace') this.answerQuote(false);
+      return;
+    }
+    const k = e.key.toLowerCase();
+    // the sector map takes the keys while it is open: M, Esc or P close it, everything else waits
+    if (this.world.sectorOpen) { if (k === 'm' || k === 'escape' || k === 'p') this.world.closeSectorMap(); return; }
+    if (k === 'escape' || k === 'p') { this.togglePause(); return; }
     if (this.modal) {
       if ((e.key === 'Enter' || e.key === ' ') && G.mode === 'title') this.startGame();
       return;
     }
-    const k = e.key.toLowerCase();
     if (k >= '1' && k <= '5') bus.emit('speed', Number(k));
     else if (k === 'b' || k === ' ') bus.emit('brake');
     else if (k === 'a' || k === 'arrowleft') bus.emit('lane', -1);
     else if (k === 'd' || k === 'arrowright') bus.emit('lane', 1);
     else if (k === 'w' || k === 'arrowup') bus.emit('speed', clamp(G.speedSet + 1, 1, 5));
     else if (k === 's' || k === 'arrowdown') { if (G.speedSet <= 1) bus.emit('brake'); else bus.emit('speed', G.speedSet - 1); }
-    else if (k === 'm') this.toggleMute();
+    else if (k === 'm') this.openSectorMap();
+    else if (k === 'n') this.toggleMute();
     else if (k === 'e') bus.emit('act');
     // radio: R / Q change station (E is taken by favours), - and + volume, V DJ voice
     else if (k === 'r') { sfx.init(); radio.start(); radio.next(); }
@@ -89,6 +103,8 @@ export class UIScene extends Phaser.Scene {
     else if (k === '=' || k === '+') radio.setVolume(radio.volume + 1);
     else if (k === 'v') { radio.toggleVoice(); toast(radio.voiceOn ? 'DJ voice on' : 'DJ voice off', '#9fe9ff', 1500); }
   }
+  /** the sector map opens over the drive only (not the title, job board, garage or pause menu) */
+  private openSectorMap() { if (!this.modal && this.world.openSectorMap()) sfx.click(); }
   private toggleMute() { G.muted = !G.muted; sfx.setMuted(G.muted); this.last.mute = ''; if (G.muted) radio.cancelSpeech(); }
   // ------------------------------------------------------------------ pause
   /** freeze gameplay (the world scene skips its update while G.paused) and show the pause menu; call again to resume */
@@ -105,7 +121,7 @@ export class UIScene extends Phaser.Scene {
     const b = this.btn(W / 2, H * 0.36 + 130 * u, 280 * u, 62 * u, 'Resume', 24, () => this.togglePause(), 0x1f8a5a, 0x7ff0c0);
     c.add(b.c);
     c.add(this.txt(W / 2, H * 0.36 + 190 * u, 'Esc or P to resume', 15, '#8fa6d8', false, [0.5, 0.5]));
-    c.add(this.txt(W / 2, H * 0.36 + 214 * u, 'R / Q radio station · − / + volume · V DJ voice · M mute', 13, '#8fa6d8', false, [0.5, 0.5]));
+    c.add(this.txt(W / 2, H * 0.36 + 214 * u, 'M sector map · R / Q radio station · − / + volume · V DJ voice · N mute', 13, '#8fa6d8', false, [0.5, 0.5]));
   }
 
   // ------------------------------------------------------------------ helpers
@@ -139,6 +155,7 @@ export class UIScene extends Phaser.Scene {
     const u = this.u;
     if (this.root) this.root.destroy(true);
     this.root = this.add.container(0, 0);
+    if (this.world.sectorOpen) this.root.setVisible(false);
     this.last = {};
     const R = this.root;
     // money & rank
@@ -161,6 +178,8 @@ export class UIScene extends Phaser.Scene {
     this.fuelT = this.txt(W - 26 * u, 22 * u, '', 13, '#bcd2ff', true, [1, 0]); R.add(this.fuelT);
     this.muteBtn = this.btn(W - 300 * u, 43 * u, 52 * u, 52 * u, '♪', 22, () => this.toggleMute()); R.add(this.muteBtn.c);
     const pb = this.btn(W - 360 * u, 43 * u, 52 * u, 52 * u, 'II', 20, () => this.togglePause()); R.add(pb.c);
+    // sector map, under pause and mute (clear of the speed bar and sat-nav on a narrow portrait screen too)
+    this.mapBtn = this.btn(W - 330 * u, 99 * u, 112 * u, 40 * u, 'MAP  (M)', 15, () => this.openSectorMap(), 0x1c2a52, CYAN); R.add(this.mapBtn.c);
     // trucker radio
     this.radioG = this.add.graphics(); R.add(this.radioG);
     this.drawRadioPanel(0);
@@ -490,9 +509,13 @@ export class UIScene extends Phaser.Scene {
       if (this.last.nav !== nk) {
         this.last.nav = nk;
         const b = this.banner;
-        this.navTitle.setText(nav.title);
-        if (this.navTitle.width > b.w - 104 * u) this.navTitle.setScale((b.w - 104 * u) / this.navTitle.width); else this.navTitle.setScale(1);
-        this.navSub.setText(nav.sub);
+        // both lines shrink to fit the banner rather than run off its right edge
+        const fit = (t: Phaser.GameObjects.Text, s: string) => {
+          t.setScale(1).setText(s);
+          if (t.width > b.w - 104 * u) t.setScale((b.w - 104 * u) / t.width);
+        };
+        fit(this.navTitle, nav.title);
+        fit(this.navSub, nav.sub);
         this.navDist.setText(nav.dist > 0 ? distTxt(nav.dist) : '');
         const g = this.navG; g.clear();
         this.drawNavArrow(g, b.x + 44 * u, b.y + 44 * u, 62 * u, nav.arrow);
@@ -639,6 +662,32 @@ export class UIScene extends Phaser.Scene {
     });
     c.add(this.txt(W / 2, y0 + ph - 22 * u, 'Bigger hauls unlock as you earn. Spend your earnings in the Rig Garage.', 13, '#8fa6d8', false, [0.5, 0.5]));
     save();
+  }
+
+  // ------------------------------------------------------------------ repair bay
+  private answerQuote(authorise: boolean) {
+    this.quoteOpen = false; this.closeModal(); sfx.click();
+    bus.emit('repairReply', authorise);
+  }
+  openQuote(q: RepairQuote) {
+    const W = this.scale.width, H = this.scale.height, u = this.u;
+    const c = this.dim();
+    this.quoteOpen = true;
+    const pw = Math.min(W - 40 * u, 520 * u), ph = 300 * u;
+    const x0 = W / 2 - pw / 2, y0 = H / 2 - ph / 2;
+    c.add(this.panel(x0, y0, pw, ph, 0.97));
+    c.add(this.txt(x0 + 28 * u, y0 + 20 * u, `${q.facility} — Repair bay`, 24));
+    c.add(this.txt(x0 + 28 * u, y0 + 54 * u, 'Quote before any work', 14, '#9fe9ff', false));
+    const g = this.add.graphics();
+    g.fillStyle(0x14503a, 1); g.fillRoundedRect(x0 + 20 * u, y0 + 90 * u, pw - 40 * u, 70 * u, 10 * u);
+    c.add(g);
+    c.add(this.txt(x0 + pw / 2, y0 + 112 * u, q.text, 22, '#b8ffd8', true, [0.5, 0.5]));
+    c.add(this.txt(x0 + pw / 2, y0 + 142 * u, `Total ${money(q.total)}`, 15, '#cfe0ff', false, [0.5, 0.5]));
+    const bw = Math.min(190 * u, (pw - 60 * u) / 2);
+    const ok = this.btn(x0 + pw / 2 - bw / 2 - 10 * u, y0 + 210 * u, bw, 52 * u, 'Authorise', 19, () => this.answerQuote(true), 0x1f8a5a, 0x7ff0c0);
+    const no = this.btn(x0 + pw / 2 + bw / 2 + 10 * u, y0 + 210 * u, bw, 52 * u, 'Decline', 19, () => this.answerQuote(false), 0x1c2a52, EDGE);
+    c.add(ok.c); c.add(no.c);
+    c.add(this.txt(W / 2, y0 + ph - 22 * u, 'Enter to authorise · Esc to decline', 13, '#8fa6d8', false, [0.5, 0.5]));
   }
 
   // ------------------------------------------------------------------ rig garage
