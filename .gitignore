@@ -16,3 +16,6 @@ dist/
 # Build artifacts (added by engine migration)
 desktop-export/
 .canvas/
+
+# Claude Code agent worktrees
+.claude/worktrees/
