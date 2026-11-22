@@ -249,7 +249,7 @@ describe('bounded traffic', () => {
       expect(invalidSpawns).toBe(0);
     }
     expect(live(tr).length).toBeGreaterThan(100);
-  });
+  }, 30000); // two simulated minutes of a full network take a few seconds, more on a busy machine
   it.each([false, true])('caps simultaneous ongoing departures with dock burst=%s and automatic convoys', burst => {
     vi.spyOn(Math, 'random').mockReturnValue(0.45);
     TRAFFIC_CFG.maxVehicles = 10; TRAFFIC_CFG.maxLocals = 0; TRAFFIC_CFG.convoyChance = 1;
