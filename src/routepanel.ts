@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { SectorMapScene } from './sectormap';
+import type { RouteComparison } from './world';
 import { FONT, strokeRoute } from './render';
 import { FACILITY_NAME } from './network';
 
@@ -17,7 +18,7 @@ export const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t
 export class RoutePanel {
   private box: Phaser.GameObjects.Container | null = null;
   /** the comparison shown, worked out when the card is built (not on every pan or zoom) */
-  private cmp: ReturnType<SectorMapScene['world']['routeComparison']> = null;
+  private cmp: RouteComparison | null = null;
 
   constructor(private map: SectorMapScene) {
     map.layouts.push(() => this.build());

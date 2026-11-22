@@ -87,8 +87,8 @@ export function closedLanesText(closed: number[], lanes: number): string {
 }
 /** how close to a fuel stop's or a lay-by's middle an inspected point counts as on it */
 const FACILITY_REACH = 260, LAYBY_REACH = 150, HQ_REACH = 300;
-/** A pair of stations joined by more than one genuinely different route; `fast` is the road of the faster legal route (ADR 0001). */
-export interface Corridor { stations: [string, string]; fast: string }
+/** A pair of stations joined by more than one genuinely different route (ADR 0001). */
+export interface Corridor { stations: [string, string] }
 /** an axis-aligned world rectangle */
 /**
  * One route offered in a route comparison. `start` is where it begins (which departure, for a rig at a station gate);
@@ -785,7 +785,7 @@ export class Network {
     lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
     const link = this.kestrelLink(kestrel, polar, harbor, glacier);
     this.policeHQ(kestrel, link, polar);
-    this.corridors.push({ stations: [harbor.id, glacier.id], fast: polar.name });
+    this.corridors.push({ stations: [harbor.id, glacier.id] });
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
     // Opposing directions use separate decks where the inner slips cross the other carriageway.
