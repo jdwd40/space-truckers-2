@@ -80,6 +80,10 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Sector map (#26): The player's arrow must sit on the rig's road pointing the way it drives, with the current route in cyan to the goal.
 - Sector map (#26): Close and reopen the map in the same session: it must show the same place at the same zoom. Reloading the page starts again from the whole network.
 - Sector map (#26): The HUD sat-nav must look and work as before, including at the far corners of the network (Polar Express, Ember Belt).
+- Route comparison (#29): at Harbor Prime, accept a contract to Glacier Outpost and open the sector map before pulling away. A "Routes to Glacier Outpost" card (bottom left; along the bottom on a narrow portrait screen) must show the deadline (about 2:11) and two routes: Fastest · Polar Express, ETA about 1:54 on time, 2 cameras, no fuel or repair; and Alternative · Via Kestrel Station, ETA about 2:15 late, Harbor Run › Frost Line, 1 camera, Harbor Pumps and Frost Fuel (both Fuel & Repair). The followed route is cyan on the map and the other amber.
+- Route comparison (#29): tap the Kestrel row. It must read "✓ Following" and turn cyan, and the rig must move to the Harbor Run gate. Close the map and drive: the sat-nav keeps to Harbor Run, passes through Kestrel Station and leaves along Frost Line. After delivery at Glacier Outpost the choice is gone: the next contract uses the fastest route.
+- Route comparison (#29): pick the Kestrel route again, then tap it a second time: the choice is cancelled, the rig returns to the Polar Express gate (if it has not pulled away) and the sat-nav follows the fastest route.
+- Route comparison (#29): open the map while driving with no contract: there is no card, and the map pans, zooms and closes as before. Tapping the card must not pan the map or inspect what is under it.
 
 ## Scope boundaries
 
