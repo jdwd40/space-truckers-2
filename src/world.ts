@@ -16,6 +16,8 @@ import { ZoneDef, ZoneId, ZONE_BY_ID, ZoneLook, zoneAt, lookOf, lerpLook } from 
 import { SetPieces, PieceKind } from './setpieces';
 import { calculateHandling, calculateServiceBrake } from './handling';
 import { advanceCameraOverview, calculateCameraTargets } from './camera';
+import { SectorView } from './sectorview';
+import type { SectorMapScene } from './sectormap';
 
 const STATION_R = 1250;
 const CARGO: Record<string, string[]> = {
@@ -99,6 +101,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   giant!: Phaser.GameObjects.Image; giantA = 0; gx = 0; gy = 0;
   upcomingT = 0; upcomingCache: { zone: ZoneDef; dist: number } | null = null;
   setPieces!: SetPieces;
+  /** the sector map: whether it is open, where it is looking (kept for the session) and the scene that draws it */
+  sectorOpen = false;
+  sectorView: SectorView | null = null;
+  sectorMap: SectorMapScene | null = null;
 
   constructor() { super('world'); }
 
@@ -184,6 +190,9 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     bus.on('accept', (job: Job) => this.acceptJob(job));
     this.scale.on('resize', () => this.layoutStars());
     this.layoutStars();
+    this.sectorMap = this.scene.get('sector') as SectorMapScene;
+    this.sectorMap.attach(this);
+    this.scene.launch('sector');
     this.scene.launch('ui');
     // dev only: force a zone from the console, e.g. `__zone('nebula')`
     if (import.meta.env.DEV) (window as any).__zone = (id: ZoneId) => { const z = ZONE_BY_ID[id]; if (z) this.switchZone(z); };
@@ -361,6 +370,29 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     this.mapMarker = this.add.graphics(); this.mapLayer.add(this.mapMarker);
     this.mapArrow = this.add.image(0, 0, 'navarrow'); this.mapLayer.add(this.mapArrow);
   }
+  // ----------------------------------------------------------- sector map
+  /**
+   * Open the full-screen sector map. In solo it pauses the simulation and camera exactly like the pause menu (the
+   * world skips its update while G.paused). It only opens while driving and not already paused, so closing it never
+   * resumes a pause menu or job board. Returns whether it opened.
+   */
+  openSectorMap(): boolean {
+    if (this.sectorOpen || G.paused || G.mode !== 'drive') return false;
+    const w = this.scale.width, h = this.scale.height, top = this.sectorMap?.insetTop ?? 0;
+    if (!this.sectorView) { this.sectorView = new SectorView(this.net.bounds()); this.sectorView.fit(w, h, top); }
+    else this.sectorView.resize(w, h, top);
+    this.sectorOpen = true; G.paused = true;
+    this.sectorMap?.show(this.sectorView);
+    bus.emit('sectormap', true);
+    return true;
+  }
+  closeSectorMap() {
+    if (!this.sectorOpen) return;
+    this.sectorOpen = false; G.paused = false;
+    this.sectorMap?.hide();
+    bus.emit('sectormap', false);
+  }
+  toggleSectorMap() { if (this.sectorOpen) this.closeSectorMap(); else this.openSectorMap(); }
   navMaskG: Phaser.GameObjects.Graphics | null = null;
   setNavRect(x: number, y: number, size: number) {
     this.minicam.setViewport(Math.round(x), Math.round(y), Math.round(size), Math.round(size));

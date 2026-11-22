@@ -57,6 +57,19 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Stay in a closed lane: your rig must stop at the barrier and pressing A or D must take you out, including from the far lane of a two-lane closure.
 - Watch traffic slow on the approach, leave the closed lanes, zip in at the barrier when busy, and pick up speed after the works.
 
+### Milestone 1: corridor and sector map
+
+Sector map (#26):
+- While driving, press `M` or tap **MAP (M)** under the pause and mute buttons. The full-screen sector map must open over the whole network, with every road, station and fuel stop visible below the title bar, and the HUD hidden.
+- Traffic, fuel, the delivery clock and the camera must stay frozen while the map is open. Close it with `M`, `Esc`, `P` or **✕ Close**: the rig must carry on from exactly where it was, at the same speed, with the HUD back.
+- `M` must do nothing on the title screen, the job board, the garage or the pause menu. Mute is now `N` (the ♪ button is unchanged).
+- Desktop: the mouse wheel zooms about the pointer and dragging pans. Zoom in on a junction until lane lines appear: flyovers must be drawn over the roads they cross, and the lines must stay sharp.
+- Touch, narrow portrait (about 390 × 844): pinch zooms, one-finger drag pans, and taps on the map must not reach the hidden HUD (the selected speed must not change).
+- Station names, road names and fuel stop names must stay the same size on screen at every zoom and never overlap; near a screen edge a station name moves under or over its ring instead of being cut off. Lay-by names appear once zoomed in.
+- The player's arrow must sit on the rig's road pointing the way it drives, with the current route in cyan to the goal.
+- Close and reopen the map in the same session: it must show the same place at the same zoom. Reloading the page starts again from the whole network.
+- The HUD sat-nav must look and work as before, including at the far corners of the network (Polar Express, Ember Belt).
+
 ## Scope boundaries
 
 Roadworks are placed once when the world is built and stay for the session. Sites sit wholly inside one road section, clear of joins, lane tapers, slip roads, signals and stations.
