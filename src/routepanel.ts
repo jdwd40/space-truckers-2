@@ -24,7 +24,8 @@ export class RoutePanel {
     map.overlays.unshift((g, _v, px) => {
       const cmp = this.cmp;
       if (!cmp) return;
-      const active = Math.max(0, cmp.picked);
+      // with a waypoint set the sat-nav follows neither compared route, so both are drawn as alternatives
+      const active = map.world.waypoint ? -1 : Math.max(0, cmp.picked);
       cmp.options.forEach((o, i) => {
         if (i === active) return;
         const pts = map.world.net.routePoints(o.route, o.start.seg, o.start.s, Math.max(80, px * 6));
@@ -61,8 +62,9 @@ export class RoutePanel {
     const st = map.world.jobStation()!;
     c.add(txt(14 * u, 10 * u, `ROUTES TO ${st.name.toUpperCase()}`, 14, '#ffffff'));
     c.add(txt(w - 14 * u, 12 * u, `deadline ${clock(cmp.deadline)}`, 13, '#ffd23c').setOrigin(1, 0));
+    const followed = map.world.waypoint ? -1 : Math.max(0, cmp.picked);
     cmp.options.forEach((o, i) => {
-      const ry = headH + i * (rowH + 6 * u), picked = cmp.picked === i, col = i === Math.max(0, cmp.picked) ? FOLLOWED : OTHER;
+      const ry = headH + i * (rowH + 6 * u), picked = cmp.picked === i, col = i === followed ? FOLLOWED : OTHER;
       const rg = map.add.graphics();
       rg.fillStyle(picked ? 0x1d3a5c : 0x18234a, 1); rg.fillRoundedRect(8 * u, ry, w - 16 * u, rowH, 9 * u);
       rg.lineStyle((picked ? 2.5 : 1.5) * u, picked ? col : 0x2c3f73, 1); rg.strokeRoundedRect(8 * u, ry, w - 16 * u, rowH, 9 * u);
@@ -86,7 +88,8 @@ export class RoutePanel {
       });
       c.add(zone);
     });
-    const foot = cmp.picked >= 0 ? 'Tap the followed route again to go back to the fastest' : 'Tap a route for the sat-nav to follow it';
+    const foot = map.world.waypoint ? 'Following your waypoint · tap a route to follow it instead'
+      : cmp.picked >= 0 ? 'Tap the followed route again to go back to the fastest' : 'Tap a route for the sat-nav to follow it';
     c.add(txt(14 * u, h - 22 * u, foot, 11, '#8fa6d8', false));
   }
 }

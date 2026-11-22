@@ -794,13 +794,19 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     const q = via[0].seg.path.at(via[0].s);
     // the last choice wins: a waypoint replaces a route picked from the comparison
     this.waypoint = { x: q.x, y: q.y, via }; this.routeChoice = null;
-    this.computeRoute(false);
+    this.reroute();
     return true;
   }
   clearWaypoint() {
     if (!this.waypoint) return;
     this.waypoint = null;
-    this.computeRoute(false);
+    this.reroute();
+  }
+  /** route again; a rig still waiting at a station gate is first moved to the departure the new route leaves by */
+  private reroute() {
+    const gate = this.atGate(), st = this.jobStation();
+    if (gate && st) this.depart(gate, st.id, !G.braking);
+    else this.computeRoute(false);
   }
   /** the rig has driven over the waypoint (on any carriageway it can be reached on) since the last frame */
   private reachedWaypoint(prevS: number, prevSeg: Seg): boolean {
@@ -849,9 +855,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   clearRouteChoice() {
     if (!this.routeChoice) return;
     this.routeChoice = null;
-    const gate = this.atGate(), st = this.jobStation();
-    if (gate && st) this.depart(gate, st.id, !G.braking);
-    else this.computeRoute(false);
+    this.reroute();
   }
   /** still at the gate: move the rig to the departure a picked route leaves by */
   private leaveGateBy(seg: Seg) {

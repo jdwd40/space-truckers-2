@@ -159,4 +159,18 @@ describe('waypoints in the world', () => {
     expect(scene.waypoint).toBeNull();
     expect(roadsOn(scene)).not.toContain('M2');
   });
+
+  it('at the station gate, moves the rig to the departure that leads through the waypoint, and back when it is removed', () => {
+    const { scene, net, p, onRoad } = worldOnHarborRun();
+    scene.depart(net.byId.harbor, 'glacier');
+    const fastest = p.seg;
+    const a = onRoad('Frost Line', 0.4);
+    scene.setWaypoint(a.x, a.y);
+    // Harbor Run, a pass-through at Kestrel, then Frost Line: no doubling back along Frost Line from Glacier's end
+    expect(p.seg.road).toBe('Harbor Run');
+    expect(p.route.some((t) => t.kind === 'dock' && t.from.arrStation === net.byId.kestrel)).toBe(true);
+    expect(routeMiss(scene, scene.waypoint!)).toBeLessThan(25);
+    scene.clearWaypoint();
+    expect(p.seg).toBe(fastest);
+  });
 });
