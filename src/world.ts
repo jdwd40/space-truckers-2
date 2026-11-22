@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, PASS_THROUGH_DWELL } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, PASS_THROUGH_DWELL, type RouteOption } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
 import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
@@ -121,6 +121,8 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   sectorOpen = false;
   sectorView: SectorView | null = null;
   sectorMap: SectorMapScene | null = null;
+  /** the route the player picked from the route comparison: the sat-nav keeps off `avoid` until arrival or cancellation */
+  routeChoice: { name: string; avoid: ReadonlySet<string> } | null = null;
 
   constructor() { super('world'); }
 
@@ -755,9 +757,14 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   computeRoute(announce: boolean) {
     const p = this.player;
     const goals = this.goals();
+    if (!G.job) this.routeChoice = null;
     if (!goals.length) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
-    const r = this.net.route(p.seg, p.s, goals, side, true);
+    // a picked route only steers the way to the contract's station, not a detour to fuel or repair
+    const avoid = this.jobBound() ? this.routeChoice?.avoid : undefined;
+    let r = avoid ? this.net.route(p.seg, p.s, goals, side, true, avoid) : null;
+    if (avoid && !r) { this.routeChoice = null; toast('Picked route is no longer possible — back to the fastest route', '#ffd27a', 3000); }
+    if (!r) r = this.net.route(p.seg, p.s, goals, side, true);
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
@@ -766,6 +773,57 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (announce) toast('Route updated', '#9fe9ff', 1400);
     this.drawRoute();
   }
+  /** whether the sat-nav is leading to the contract's next station (not a fuel stop or repair bay) */
+  private jobBound() { return !!G.job && !this.fuelTarget && !this.repairTarget?.bay; }
+  /** the station the contract needs next */
+  private jobStation(): Station | null { return G.job ? this.net.byId[G.job.stage === 'pickup' ? G.job.from : G.job.to] : null; }
+  /** the rig is still waiting at a station gate it has just been put on, so a comparison may leave by any departure */
+  private atGate(): Station | null {
+    const p = this.player, st = p.seg.depStation;
+    return st && this.pstate === 'drive' && p.s <= 160 && Math.abs(p.v) < 1 ? st : null;
+  }
+
+  /**
+   * Route comparison for the contract: the fastest legal route to its next station and the fastest that avoids that
+   * route's main road, each with its legal arrival against the deadline (`eta` and `deadline` are contract-clock
+   * seconds). From a station gate the routes may leave by any departure. Null without a contract.
+   */
+  routeComparison(): { deadline: number; elapsed: number; picked: number; options: (RouteOption & { eta: number; avoid: ReadonlySet<string> })[] } | null {
+    const job = G.job, st = this.jobStation();
+    if (!job || !st || G.mode !== 'drive' || !this.player) return null;
+    const p = this.player, gate = this.atGate();
+    const starts = gate ? gate.dep.map((seg) => ({ seg, s: 150 })) : [{ seg: p.seg, s: p.s }];
+    const found = this.net.compareRoutes(starts, this.net.stationGoals(st));
+    const options = found.map((o, i) => {
+      // keep to this route by avoiding the roads only the other one drives
+      const other = found[1 - i], avoid = new Set(other ? other.roads.filter((rd) => !o.roads.includes(rd)) : []);
+      return { ...o, eta: job.elapsed + o.route.cost + START_STOP_TIME, avoid };
+    });
+    const picked = this.routeChoice ? options.findIndex((o) => o.name === this.routeChoice!.name) : -1;
+    return { deadline: job.target, elapsed: job.elapsed, picked, options };
+  }
+  /** follow option i of the route comparison until arrival, completion or cancellation */
+  pickRoute(i: number) {
+    const o = this.routeComparison()?.options[i];
+    if (!o) return;
+    this.routeChoice = { name: o.name, avoid: o.avoid };
+    this.leaveGateBy(o.start.seg);
+    this.computeRoute(false);
+  }
+  /** cancel a picked route: the sat-nav goes back to the fastest route */
+  clearRouteChoice() {
+    if (!this.routeChoice) return;
+    this.routeChoice = null;
+    const gate = this.atGate(), st = this.jobStation();
+    if (gate && st) this.depart(gate, st.id, !G.braking);
+    else this.computeRoute(false);
+  }
+  /** still at the gate: move the rig to the departure a picked route leaves by */
+  private leaveGateBy(seg: Seg) {
+    const gate = this.atGate(), st = this.jobStation();
+    if (gate && st && seg !== this.player.seg && gate.dep.includes(seg)) this.depart({ ...gate, dep: [seg] }, st.id, !G.braking);
+  }
+
   /** Reconsider congestion at most every five seconds, never while committed to a slip lane. */
   private refreshNavigation(dt: number) {
     this.navigationT -= dt;
@@ -811,6 +869,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   }
   acceptJob(job: Job) {
     G.job = job;
+    this.routeChoice = null;
     G.mode = 'drive';
     const tesana = (window as any).Tesana;
     tesana?.gameplay?.levelStart({ levelId: job.id, levelIndex: G.deliveries });
@@ -824,7 +883,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   depart(st: Station, targetId: string, auto = false) {
     let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
-    for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    const avoid = this.routeChoice?.avoid;
+    for (const seg of st.dep) { const r = this.net.route(seg, 150, goals, 0, false, avoid); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    // a picked route that cannot leave from here gives way to the fastest departure
+    if (avoid && bc === Infinity) for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
     const p = this.player;
     // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
     const lane = best.lanes - 1, lat = best.laneLat(lane);
@@ -903,6 +965,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
       G.money += total; G.earned += total; G.deliveries++;
       tesana?.gameplay?.levelComplete({ levelId: job.id });
       G.job = null;
+      this.routeChoice = null;
       this.fuelTarget = null;
       this.computeRoute(false);
       this.refreshPlayerVis();
@@ -915,6 +978,7 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     }
     if (job && job.stage === 'pickup' && job.from === st.id) {
       job.stage = 'deliver';
+      this.routeChoice = null;
       tesana?.gameplay?.checkpoint({ levelId: job.id, name: 'pickup' });
       this.refreshPlayerVis();
       toast(`Loaded ${job.cargo}! Now deliver to ${this.net.byId[job.to].name}`, '#7ff0c0', 4500);
