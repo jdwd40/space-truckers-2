@@ -1,51 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-/** The job board shuffles its destinations; these tests put the destination they want first. */
-let firstDest = '';
-vi.mock('phaser', () => ({
-  default: {
-    Events: { EventEmitter: class { emit() {} } }, Scene: class {},
-    Utils: { Array: { Shuffle: <T extends { id: string }>(a: T[]) => [...a].sort((x, y) => Number(y.id === firstDest) - Number(x.id === firstDest)) } },
-  },
-}));
-import { WorldScene, STATION_R } from './world';
-import { Network, type PoliceHQ, type Seg } from './network';
-import { Traffic } from './traffic';
-import { edgeS } from './render';
+vi.mock('phaser', async () => (await import('./test-phaser')).phaserStub);
+import type { PoliceHQ, Seg } from './network';
 import { G } from './state';
-
-const STEP = 0.02;
+import { headlessWorld, boardContract, tick, STEP } from './test-world';
 
 /**
  * A headless world with the real network and no AI traffic, and a loaded starter rig with a contract from `fromId` to
  * `toId`, put on Kestrel Link at s on `seg` in `lane`.
  */
 function world(fromId: string, toId: string | null, at: (link: { f: Seg[]; r: Seg[] }) => [Seg, number, number]) {
-  vi.stubGlobal('window', {});
-  vi.spyOn(Math, 'random').mockReturnValue(0.99);
-  const scene = new WorldScene(), net = new Network();
-  scene.net = net;
-  scene.traffic = new Traffic(net, scene);
-  scene.traffic.localT = Infinity; scene.traffic.spawnT.fill(Infinity);
-  scene.inc = { update() {}, hazardAhead: () => null, playerIncident: () => null, laneBlockedAhead: () => false, inSlowZone: () => false } as any;
-  (scene as any).favours = { onExit() {}, onDocked() {}, prompt: () => '' };
-  vi.spyOn(scene as any, 'drawRoute').mockImplementation(() => {});
-  vi.spyOn(scene as any, 'buildUnits').mockImplementation(() => {});
-  for (const st of net.stations) for (const seg of st.arr) scene.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
-  const from = net.byId[fromId];
-  scene.player = scene.traffic.add('player', from.dep[0], 150, 0, 0);
-  scene.traffic.player = scene.player;
-  scene.player.gfx = {};
-  scene.baseAMax = scene.player.aMax;
-  scene.station = from;
-  (scene as any).computeCosts();
-  G.deliveries = 1; G.earned = 0; G.money = 0; G.fuel = 1; G.pax = 0;
-  if (toId) {
-    firstDest = toId;
-    const job = scene.makeJobs(from)[0];
-    job.cls = 0;
-    scene.acceptJob(job);
-  }
+  const { scene, net, station: from } = headlessWorld(fromId);
+  if (toId) scene.acceptJob(boardContract(scene, from, toId));
   scene.station = null;
   const link = net.roads.find((r) => r.name === 'Kestrel Link')!;
   const [seg, s, lane] = at(link);
@@ -63,16 +28,12 @@ function world(fromId: string, toId: string | null, at: (link: { f: Seg[]; r: Se
 function step(w: ReturnType<typeof world>, seconds: number, until: () => boolean): boolean {
   const { scene, p } = w;
   for (let t = 0; t < seconds; t += STEP) {
-    for (const q of scene.pending) q.t -= STEP;
-    const due = scene.pending.filter((q) => q.t <= 0);
-    if (due.length) { scene.pending = scene.pending.filter((q) => q.t > 0); for (const q of due) q.fn(); }
-    if (scene.pstate === 'drive' && G.mode === 'drive') {
-      G.braking = false;
-      G.speedSet = Math.max(2, p.seg.limitAt(p.s));
-    }
-    const prevS = p.s, prevSeg = p.seg;
-    scene.traffic.update(STEP);
-    (scene as any).playerLogic(STEP, prevS, prevSeg);
+    tick(scene, () => {
+      if (scene.pstate === 'drive' && G.mode === 'drive') {
+        G.braking = false;
+        G.speedSet = Math.max(2, p.seg.limitAt(p.s));
+      }
+    });
     expect(scene.pstate).not.toBe('pulled');
     if (until()) return true;
   }

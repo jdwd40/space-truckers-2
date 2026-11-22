@@ -1,45 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-/** The job board shuffles its destinations; these tests put the destination they want first. */
-let firstDest = '';
-vi.mock('phaser', () => ({
-  default: {
-    Events: { EventEmitter: class { emit() {} } }, Scene: class {},
-    Utils: { Array: { Shuffle: <T extends { id: string }>(a: T[]) => [...a].sort((x, y) => Number(y.id === firstDest) - Number(x.id === firstDest)) } },
-  },
-}));
-import { WorldScene, STATION_R } from './world';
-import { Network, type Seg, type Station } from './network';
-import { Traffic } from './traffic';
-import { edgeS } from './render';
+vi.mock('phaser', async () => (await import('./test-phaser')).phaserStub);
+import type { Seg, Station } from './network';
 import { G } from './state';
-
-const STEP = 0.02;
+import { headlessWorld, boardContract, holdLimit, tick } from './test-world';
 
 /** A headless world with the real network and no AI traffic, and a loaded starter rig with a contract from `fromId` to `toId`. */
 function world(fromId: string, toId: string) {
-  vi.stubGlobal('window', {});
-  vi.spyOn(Math, 'random').mockReturnValue(0.99); // no remote pickups on the board
-  const scene = new WorldScene(), net = new Network();
-  scene.net = net;
-  scene.traffic = new Traffic(net, scene);
-  scene.traffic.localT = Infinity; scene.traffic.spawnT.fill(Infinity);
-  scene.inc = { update() {}, hazardAhead: () => null, playerIncident: () => null, laneBlockedAhead: () => false, inSlowZone: () => false } as any;
-  (scene as any).favours = { onExit() {}, onDocked() {}, prompt: () => '' };
-  vi.spyOn(scene as any, 'drawRoute').mockImplementation(() => {});
-  vi.spyOn(scene as any, 'buildUnits').mockImplementation(() => {});
-  for (const st of net.stations) for (const seg of st.arr) scene.dockS.set(seg, edgeS(seg, st, STATION_R, true) - 70);
-  const from = net.byId[fromId], to = net.byId[toId], kestrel = net.byId.kestrel;
-  scene.player = scene.traffic.add('player', from.dep[0], 150, from.dep[0].lanes - 1, 0);
-  scene.traffic.player = scene.player;
-  scene.player.gfx = {};
-  scene.baseAMax = scene.player.aMax;
-  scene.station = from;
-  (scene as any).computeCosts();
-  G.deliveries = 1; G.earned = 0; G.money = 0; G.fuel = 1; G.pax = 0;
-  firstDest = to.id;
-  const job = scene.makeJobs(from)[0];
-  job.cls = 0;
+  const { scene, net, station: from } = headlessWorld(fromId);
+  const to = net.byId[toId], kestrel = net.byId.kestrel;
+  const job = boardContract(scene, from, to.id);
   const link = net.roads.find((r) => r.name === 'Kestrel Link')!;
   return { scene, net, from, to, kestrel, job, link };
 }
@@ -62,28 +31,21 @@ function drive(w: ReturnType<typeof world>, road: string | null, opts: { toKestr
     vi.spyOn(scene, 'depart').mockImplementation((st, id, auto) => depart(st === kestrel ? ({ ...st, dep: [opts.leaveBy!] } as Station) : st, id, auto));
   }
   const p = scene.player, roads: string[] = [];
-  let clock = 0, pulled = false, boards = 0, passedThrough = false, dockedBy: Seg | null = null;
-  while (G.job && clock < 600) {
-    for (const q of scene.pending) q.t -= STEP;
-    const due = scene.pending.filter((q) => q.t <= 0);
-    if (due.length) { scene.pending = scene.pending.filter((q) => q.t > 0); for (const q of due) q.fn(); }
-    if (scene.station === kestrel && !passedThrough) { passedThrough = true; if (goals) { goals.mockRestore(); } }
-    if (scene.pstate === 'drive' && G.mode === 'drive') {
-      const ahead = scene.net.place(p.seg, p.s + 450);
-      G.braking = false;
-      G.speedSet = Math.min(p.seg.limitAt(p.s), ahead.seg.limitAt(ahead.s));
-      const exit = p.route.find((t) => t.type === 'exit');
-      if (exit && exit.from === p.seg && exit.aux && exit.fromS - p.s < 1100 && !scene.armed && p.lane >= 0 && p.lane < p.seg.lanes) scene.armed = exit.aux;
-    }
-    const prevS = p.s, prevSeg = p.seg;
-    scene.traffic.update(STEP);
-    if (G.job && G.mode === 'drive') { G.job.elapsed += STEP; clock = G.job.elapsed; }
-    (scene as any).playerLogic(STEP, prevS, prevSeg);
+  let pulled = false, boards = 0, passedThrough = false, dockedBy: Seg | null = null;
+  while (G.job && job.elapsed < 600) {
+    tick(scene, () => {
+      if (scene.station === kestrel && !passedThrough) { passedThrough = true; if (goals) { goals.mockRestore(); } }
+      if (scene.pstate === 'drive' && G.mode === 'drive') {
+        holdLimit(scene);
+        const exit = p.route.find((t) => t.type === 'exit');
+        if (exit && exit.from === p.seg && exit.aux && exit.fromS - p.s < 1100 && !scene.armed && p.lane >= 0 && p.lane < p.seg.lanes) scene.armed = exit.aux;
+      }
+    });
     if (scene.pstate === 'pulled') pulled = true;
     if (G.mode === 'board') { if (!boards) dockedBy = p.seg; boards++; }
     if (p.seg.kind === 'motorway' && roads[roads.length - 1] !== p.seg.road) roads.push(p.seg.road);
   }
-  return { seconds: clock, roads, pulled, boards, passedThrough, docked: scene.station, gate, dockedBy };
+  return { seconds: job.elapsed, roads, pulled, boards, passedThrough, docked: scene.station, gate, dockedBy };
 }
 
 afterEach(() => { G.job = null; G.mode = 'drive'; G.braking = false; G.speedSet = 0; G.deliveries = 0; vi.unstubAllGlobals(); vi.restoreAllMocks(); });

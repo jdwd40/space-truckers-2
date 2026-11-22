@@ -1,37 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-/** The job board shuffles its destinations; tests put the destination they want first. */
-let firstDest = '';
-vi.mock('phaser', () => ({
-  default: {
-    Events: { EventEmitter: class { emit() {} } }, Scene: class {},
-    Utils: { Array: { Shuffle: <T extends { id: string }>(a: T[]) => [...a].sort((x, y) => Number(y.id === firstDest) - Number(x.id === firstDest)) } },
-  },
-}));
-import { WorldScene } from './world';
-import { Network } from './network';
+vi.mock('phaser', async () => (await import('./test-phaser')).phaserStub);
 import { G } from './state';
+import { headlessWorld, boardContract } from './test-world';
 import before from './fixtures/deadlines-before-corridor.json';
 
 function board() {
-  const scene = new WorldScene(), net = new Network();
-  scene.net = net;
-  (scene as any).computeCosts();
+  const { scene, net } = headlessWorld('harbor');
   G.deliveries = 1; G.earned = 0;
-  vi.spyOn(Math, 'random').mockReturnValue(0.99); // no remote pickups
+  const station = (name: string) => net.stations.find((s) => s.name === name)!;
   /** The first contract offered at `from`, delivering to `to`. */
-  const contract = (from: string, to: string) => {
-    firstDest = net.stations.find((s) => s.name === to)!.id;
-    return scene.makeJobs(net.stations.find((s) => s.name === from)!)[0];
-  };
+  const contract = (from: string, to: string) => boardContract(scene, station(from), station(to).id);
   /** The legal travel time of the fastest route between two stations. */
   const legal = (from: string, to: string) => {
-    const a = net.stations.find((s) => s.name === from)!, b = net.stations.find((s) => s.name === to)!;
+    const a = station(from), b = station(to);
     return Math.min(...a.dep.map((seg) => net.route(seg, 100, net.stationGoals(b))?.cost ?? Infinity));
   };
   return { contract, legal };
 }
-afterEach(() => { G.deliveries = 0; vi.restoreAllMocks(); });
+afterEach(() => { G.deliveries = 0; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('contract pay and deadlines', () => {
   it('pays by the physical distance of the fastest legal route', () => {
