@@ -224,7 +224,8 @@ describe('expanded haulage network', () => {
   it('adds two signed interstation roads with live gates and preserves every station pair', () => {
     const warn = vi.spyOn(console, 'warn');
     const net = new Network();
-    const added = net.roads.filter((r) => r.f[0].depStation && !(r.name in originalProfiles));
+    // interstation roads run from gate to gate; a link road (Kestrel Link) ends at a junction instead
+    const added = net.roads.filter((r) => r.f[0].depStation && r.f[r.f.length - 1].arrStation && !(r.name in originalProfiles));
     expect(added).toHaveLength(2);
     expect(new Set(added.map((r) => r.name)).size).toBe(2);
     expect(net.stations).toHaveLength(7);
