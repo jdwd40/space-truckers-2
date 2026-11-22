@@ -31,10 +31,13 @@ export interface Crossing { x: number; y: number; h: number; sig: Signal; corner
 export interface Goal { seg: Seg; s: number }
 /** `cost` is the route's travel time in seconds (at the posted limit, plus any delays); `distance` its physical length. */
 export interface Route { trans: Trans[]; goal: Goal; cost: number; distance: number; diverted?: boolean }
-export interface Camera { seg: Seg; s: number; x: number; y: number }
+/** `id` is stable across builds: road, carriageway (f/r) and distance along the carriageway in metres, e.g. `cam-polar-express-f-10400`. */
+export interface Camera { id: string; seg: Seg; s: number; x: number; y: number }
 
-/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the pause and pulling away again. */
-export const PASS_THROUGH_TIME = 12;
+/** Seconds a rig waits for dock clearance when it passes through a station before it is sent on towards its goal. */
+export const PASS_THROUGH_DWELL = 20;
+/** Seconds a docking pass-through adds to a route: slowing into the dock, stopping, the clearance wait and pulling away again. */
+export const PASS_THROUGH_TIME = PASS_THROUGH_DWELL + 6;
 /** Seconds of delay the router expects from each stopped vehicle in a substantial queue. */
 export const JAM_DELAY = 3;
 
@@ -414,6 +417,8 @@ export class Network {
     this.gates(CR, ember, terra, 4.2);
     for (const r of [AU, HR, FL, SH]) for (const s of both(r)) s.localOK = true;
     for (const r of [IR, CR]) for (const s of both(r)) { s.trucky = true; s.density = 0.55; }
+    // the Kestrel route is posted below Polar Express, so the longer direct road is the faster legal route (ADR 0001)
+    for (const r of [HR, FL]) for (const s of both(r)) s.limit = 4;
 
     // Outer orbital links have their own station gates: journeys need not traverse the central hubs.
     const polar = this.road('Polar Express', P([[-15000, -15500], [-15000, -17500], [-12000, -18500], [-6500, -19000], [0, -19500], [6500, -19000], [12000, -18000], [15000, -16700], [15000, -15000]]), 3, 3);
@@ -453,7 +458,9 @@ export class Network {
     const cam = (segs: Seg[], s: number) => {
       const l = this.locate(segs, s), seg = l.seg;
       const p = seg.path.at(l.s, seg.laneLat(seg.lanes) + 60);
-      this.cameras.push({ seg, s: l.s, x: p.x, y: p.y });
+      const rd = this.roads.find((r) => r.f === segs || r.r === segs)!;
+      const id = `cam-${rd.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${rd.f === segs ? 'f' : 'r'}-${Math.round(s)}`;
+      this.cameras.push({ id, seg, s: l.s, x: p.x, y: p.y });
       this.signs.push({ ...this.place(seg, l.s - 800), kind: 'side', side: 1, panels: [{ side: 'R', color: POLICE, title: 'Speed check', sub: 'Police patrol', arrow: null, icon: 'police' }] });
     };
     svc(M1.f, 5200, 4, 'Nebula Services');
@@ -505,8 +512,8 @@ export class Network {
       lay(rd.r, q(0.32));
       svc(rd.r, q(0.6), pumps[1], names[1]);
       lay(rd.r, q(0.75));
-      cam(rd.f, q(0.62));
-      cam(rd.r, q(0.5));
+      // Frost Line has no cameras: the Kestrel route is the lower-risk road for drivers who push the limit
+      if (rd !== FL) { cam(rd.f, q(0.62)); cam(rd.r, q(0.5)); }
     };
     furnish(AU, terra, harbor, ['Aurora Fuel', 'Skyline Stop'], [3, 2]);
     furnish(HR, harbor, kestrel, ['Harbor Pumps', 'Tidewater Fuel'], [2, 3]);
@@ -516,6 +523,11 @@ export class Network {
     furnish(CR, ember, terra, ['Cinder Stop', 'Ashfall Fuel'], [2, 2]);
 
     cam(M1.f, 19300); cam(M1.r, 11300); cam(M2.f, 19400); cam(M2.r, 11200);
+
+    // Polar Express: the fast corridor road has cameras and lay-bys but no fuel. The middle stays clear for a junction.
+    const pq = (segs: Seg[], x: number) => Math.round((segs.reduce((a, sg) => a + sg.len, 0) * x) / 100) * 100;
+    lay(polar.f, pq(polar.f, 0.2)); cam(polar.f, pq(polar.f, 0.3)); lay(polar.f, pq(polar.f, 0.7)); cam(polar.f, pq(polar.f, 0.8));
+    lay(polar.r, pq(polar.r, 0.18)); cam(polar.r, pq(polar.r, 0.32)); lay(polar.r, pq(polar.r, 0.68)); cam(polar.r, pq(polar.r, 0.82));
 
     // Paired through-bypasses: the inner-side slips avoid the existing outer-side furniture.
     // Opposing directions use separate decks where the inner slips cross the other carriageway.
@@ -578,9 +590,9 @@ export class Network {
       for (let i = 0; i < n; i++) {
         let lim = seg.limit;
         if (seg.kind === 'motorway') {
+          // a motorway is posted at its road's limit (5 unless lowered), and lower near the centre, crossings and stations
           const p = seg.path.at(i * 100);
-          lim = 5;
-          if (Math.hypot(p.x, p.y) < 4300) lim = 4;
+          if (Math.hypot(p.x, p.y) < 4300) lim = Math.min(lim, 4);
           for (const c of this.crossings) if (Math.hypot(p.x - c.x, p.y - c.y) < 2300) lim = 3;
           for (const st of this.stations) if (Math.hypot(p.x - st.x, p.y - st.y) < 3300) lim = 3;
         }

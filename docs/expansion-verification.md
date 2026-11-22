@@ -59,8 +59,11 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 
 ### Milestone 1: corridor and sector map
 
-- Routing by time (#21): from Kestrel Station, take a contract to Terra Nova. The sat-nav must send you along Harbor Run with a pass-through at Harbor Prime, not over M2 and M1 through the central interchange.
-- Routing by time (#21): on a Harbor Prime contract board, compare pay and deadlines with the previous build. Contracts that pass through a station pay slightly less (pay now counts only physical distance), and deadlines stay within a few seconds of before.
+- Routing by time (#21, updated by #22): from Kestrel Station, take a contract to Terra Nova. With Harbor Run posted at 4, the sat-nav must send you over M2 and M1 through the central interchange, not along Harbor Run with a pass-through at Harbor Prime.
+- Routing by time (#21, updated by #22): on a Harbor Prime contract board, compare pay with the previous build. Contracts that pass through a station pay slightly less (pay now counts only physical distance). Deadlines are now 1.15 times a legal run, so they are tighter than before, most of all on short contracts.
+- Corridor (#22): drive Harbor Run and Frost Line. Limit signs must show 4 away from the stations (3 near them), Harbor Run must have one camera per carriageway, each after a "Speed check" sign, and Frost Line must have no cameras and no "Speed check" signs.
+- Corridor (#22): at Harbor Prime, take a one-trailer contract to Glacier Outpost. The sat-nav must send you along Polar Express. Drive it at the posted limit: pass two "Speed check" signs and cameras and two lay-bys, with no fuel stop, and deliver early (about 114 s against a 131 s deadline) on about 40% of a tank.
+- Corridor (#22): take the same contract but leave along Harbor Run. At Kestrel Station the rig must wait for dock clearance (about 20 s), then leave along Frost Line by itself without opening the job board. Driven at the posted limit, it arrives just after the deadline (about 135 s) and earns no early bonus.
 
 ## Scope boundaries
 

@@ -350,10 +350,13 @@ export class Traffic {
         if (!this.spawnRoom(false)) break;
         const at = sections.shift()!;
         if (at.remaining-- > 0) {
-          // Low-discrepancy sampling covers the entire section even when only a few slots remain.
-          const s = 300 + at.phase * (at.seg.len - 600);
-          if (!this.inAux(at.seg, s)) this.spawnNPC(at.seg, s, false);
-          at.phase = (at.phase + 0.6180339887498949) % 1;
+          // Low-discrepancy sampling covers the entire section even when only a few slots remain. A slot that lands
+          // beside a slip road or lay-by moves on to the next sample, so a busy section still gets its turn.
+          for (let tries = 0; tries < 4; tries++) {
+            const s = 300 + at.phase * (at.seg.len - 600);
+            at.phase = (at.phase + 0.6180339887498949) % 1;
+            if (!this.inAux(at.seg, s)) { this.spawnNPC(at.seg, s, false); break; }
+          }
           if (at.remaining > 0) sections.push(at);
         }
         if (!sections.length) roads.delete(name);
