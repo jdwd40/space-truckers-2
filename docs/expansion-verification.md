@@ -77,6 +77,11 @@ Start the game with `npm run dev`. Do not alter production saves to run a playte
 - Sector map (#26): The player's arrow must sit on the rig's road pointing the way it drives, with the current route in cyan to the goal.
 - Sector map (#26): Close and reopen the map in the same session: it must show the same place at the same zoom. Reloading the page starts again from the whole network.
 - Sector map (#26): The HUD sat-nav must look and work as before, including at the far corners of the network (Polar Express, Ember Belt).
+- Waypoints (#28): With a Harbor Prime to Glacier Outpost contract, open the sector map and hold a finger (or the left mouse button) still on Frost Line for about half a second, or right-click it. A pink pin must appear on the road, a toast must say the waypoint is set, a **✕ Waypoint** button must appear beside **✕ Close**, and the cyan route must run along Harbor Run, through Kestrel Station and along Frost Line.
+- Waypoints (#28): Hold or right-click Polar Express instead: the pin must move there ("Waypoint moved") and the route must switch to Polar Express. A quick tap must not set or move the waypoint, and dragging to pan must not set one either, at desktop and narrow portrait sizes.
+- Waypoints (#28): Hold or right-click away from any road: a toast must say to hold on a road, and the pin must stay where it was. Hold the pin itself, or press **✕ Waypoint**: the pin must go ("Waypoint removed") and the route must return to normal.
+- Waypoints (#28): Set a waypoint on a road ahead and drive to it. On reaching it a "Waypoint reached" toast must show, the pin must be gone from the map and the sat-nav must route normally to the goal. Set one with no contract: the sat-nav must guide you to it, then show free roam again once it is reached.
+- Waypoints (#28): Set a waypoint on M2 south of Kestrel Station during a Harbor Prime to Glacier Outpost run: at the Kestrel pass-through the rig must leave by the M2 gate, not straight onto Frost Line. Reload the page: no waypoint must be set (waypoints are not saved).
 
 ## Scope boundaries
 

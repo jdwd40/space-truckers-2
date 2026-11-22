@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road } from './network';
+import { Network, Seg, Trans, Services, Station, Stop, LW, Route, Layby, Road, Goal } from './network';
 import { Traffic, Veh, PlayerCtl, HITCH } from './traffic';
 import { Cullable, DEPTH, BAKE, drawWorld, drawStation, edgeS, makeTextures, planetTex, trailerTex, STRUCT_VARIANTS, STRUCT_SIZE } from './render';
 import { Baker } from './bake';
@@ -116,6 +116,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   sectorOpen = false;
   sectorView: SectorView | null = null;
   sectorMap: SectorMapScene | null = null;
+  /**
+   * The waypoint set on the sector map: the place on the road it marks, and every carriageway section it can be reached on.
+   * The route passes it before going on to the goal, and it clears when the rig reaches it. It is never saved.
+   */
+  waypoint: { x: number; y: number; via: Goal[] } | null = null;
 
   constructor() { super('world'); }
 
@@ -750,9 +755,12 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   computeRoute(announce: boolean) {
     const p = this.player;
     const goals = this.goals();
-    if (!goals.length) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
+    // a fuel or repair detour goes straight there; the waypoint waits until it is done
+    const wp = this.fuelTarget || this.repairTarget?.bay ? null : this.waypoint;
+    if (!goals.length && !wp) { p.route = []; p.goal = null; this.routeDiverted = false; this.drawRoute(); return; }
     const side = p.lane >= p.seg.lanes ? 1 : p.lane < 0 ? -1 : 0;
-    const r = this.net.route(p.seg, p.s, goals, side, true);
+    // an unreachable waypoint (say, behind a closure) is kept, and the route goes straight to the goal until it is reachable
+    const r = (wp && this.net.routeVia(p.seg, p.s, wp.via, goals, side, true)) || (goals.length ? this.net.route(p.seg, p.s, goals, side, true) : null);
     this.routeDiverted = r?.diverted ?? false;
     p.route = r ? r.trans : [];
     p.goal = r ? r.goal : null;
@@ -760,6 +768,29 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
     if (!r && this.fuelTarget) { this.fuelTarget = null; this.computeRoute(announce); return; }
     if (announce) toast('Route updated', '#9fe9ff', 1400);
     this.drawRoute();
+  }
+  /**
+   * Set (or move) the waypoint to the road nearest the map point (x, y), within `radius` world units, and reroute through
+   * it. Returns false, keeping any waypoint already set, when there is no road there.
+   */
+  setWaypoint(x: number, y: number, radius = 400): boolean {
+    const via = this.net.waypointGoals(x, y, radius);
+    if (!via.length) return false;
+    const q = via[0].seg.path.at(via[0].s);
+    this.waypoint = { x: q.x, y: q.y, via };
+    this.computeRoute(false);
+    return true;
+  }
+  clearWaypoint() {
+    if (!this.waypoint) return;
+    this.waypoint = null;
+    this.computeRoute(false);
+  }
+  /** the rig has driven over the waypoint (on any carriageway it can be reached on) since the last frame */
+  private reachedWaypoint(prevS: number, prevSeg: Seg): boolean {
+    const p = this.player;
+    return !!this.waypoint?.via.some((g) => (p.seg === g.seg && p.s >= g.s - 30 && (prevSeg !== g.seg || prevS < g.s + 200)) ||
+      (prevSeg === g.seg && prevS < g.s && p.seg !== g.seg));
   }
   /** Reconsider congestion at most every five seconds, never while committed to a slip lane. */
   private refreshNavigation(dt: number) {
@@ -819,7 +850,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   depart(st: Station, targetId: string, auto = false) {
     let best = st.dep[0], bc = Infinity;
     const goals = this.net.stationGoals(this.net.byId[targetId]);
-    for (const seg of st.dep) { const r = this.net.route(seg, 150, goals); if (r && r.cost < bc) { bc = r.cost; best = seg; } }
+    // with a waypoint set, leave by the gate that is fastest through it (if any gate reaches it)
+    const via = this.waypoint?.via;
+    const cost = (seg: Seg, thru: boolean) => (thru ? this.net.routeVia(seg, 150, via!, goals) : this.net.route(seg, 150, goals))?.cost ?? Infinity;
+    const thru = !!via && st.dep.some((seg) => cost(seg, true) < Infinity);
+    for (const seg of st.dep) { const c = cost(seg, thru); if (c < bc) { bc = c; best = seg; } }
     const p = this.player;
     // only remove ships the rig would be dropped onto; the rest of the dock traffic stays and the player joins the queue
     const lane = best.lanes - 1, lat = best.laneLat(lane);
@@ -1037,6 +1072,11 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   private playerLogic(dt: number, prevS: number, prevSeg: Seg) {
     const p = this.player, seg = p.seg;
     if (G.mode !== 'drive') return;
+    if (this.reachedWaypoint(prevS, prevSeg)) {
+      this.clearWaypoint();
+      toast('Waypoint reached', '#9fe9ff', 1800);
+      sfx.chime();
+    }
     this.refreshNavigation(dt);
     // fuel use
     const ds = p.seg === prevSeg ? Math.max(0, p.s - prevS) : p.v * dt;
