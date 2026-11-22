@@ -45,16 +45,38 @@ describe('expanded haulage network', () => {
       expect(end.endT!.to.endT?.type).toBe('merge');
     }
   });
-  it('keeps the new interstation carriageways inside the existing sat-nav texture extent', () => {
-    const net = new Network();
+  it('keeps the new interstation carriageways inside the sat-nav extent, now the derived map bounds', () => {
+    const net = new Network(), b = net.bounds();
     const added = net.roads.filter((r) => r.f[0].depStation && !(r.name in originalProfiles));
     for (const rd of added) for (const seg of [...rd.f, ...rd.r]) {
       const half = seg.lanes * LW / 2;
-      expect(seg.path.minX - half).toBeGreaterThan(-22000);
-      expect(seg.path.maxX + half).toBeLessThan(22000);
-      expect(seg.path.minY - half).toBeGreaterThan(-20000);
-      expect(seg.path.maxY + half).toBeLessThan(20000);
+      expect(seg.path.minX - half).toBeGreaterThan(b.x0);
+      expect(seg.path.maxX + half).toBeLessThan(b.x1);
+      expect(seg.path.minY - half).toBeGreaterThan(b.y0);
+      expect(seg.path.maxY + half).toBeLessThan(b.y1);
     }
+  });
+  it('derives map bounds that contain every segment and every station with a margin, and no more', () => {
+    const net = new Network(), b = net.bounds();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const seg of net.segs) {
+      const half = seg.lanes * seg.laneW / 2 + 200;
+      expect(seg.path.minX - half, seg.name).toBeGreaterThan(b.x0);
+      expect(seg.path.maxX + half, seg.name).toBeLessThan(b.x1);
+      expect(seg.path.minY - half, seg.name).toBeGreaterThan(b.y0);
+      expect(seg.path.maxY + half, seg.name).toBeLessThan(b.y1);
+      x0 = Math.min(x0, seg.path.minX); x1 = Math.max(x1, seg.path.maxX);
+      y0 = Math.min(y0, seg.path.minY); y1 = Math.max(y1, seg.path.maxY);
+    }
+    // a station disc (radius 1250 in the world) is never cut off at the edge
+    for (const st of net.stations) {
+      expect(st.x - 1300).toBeGreaterThan(b.x0); expect(st.x + 1300).toBeLessThan(b.x1);
+      expect(st.y - 1300).toBeGreaterThan(b.y0); expect(st.y + 1300).toBeLessThan(b.y1);
+    }
+    // the margin is a frame around the roads, not a fixed oversized box
+    for (const gap of [x0 - b.x0, b.x1 - x1, y0 - b.y0, b.y1 - y1]) expect(gap).toBeLessThan(4000);
+    expect(b.x1 - b.x0).toBeCloseTo(b.w, 6);
+    expect(b.y1 - b.y0).toBeCloseTo(b.h, 6);
   });
   it('charges closures and jams only inside the traversed interval', () => {
     const net = new Network(), host = net.roads.find((r) => r.name === 'M1')!.f[1];

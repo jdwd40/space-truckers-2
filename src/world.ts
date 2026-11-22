@@ -336,7 +336,10 @@ export class WorldScene extends Phaser.Scene implements PlayerCtl {
   // ----------------------------------------------------------- sat-nav map
   private buildMap() {
     // bake the static map once into a texture (drawn every frame by the sat-nav camera)
-    const S = 0.06, X0 = -22000, Y0 = -20000, TW = Math.ceil(44000 * S), TH = Math.ceil(40000 * S);
+    // the extent comes from the roads themselves (the same bounds the sector map uses); the scale stays 0.06 unless the
+    // network grows past what one texture can hold
+    const B = this.net.bounds();
+    const S = Math.min(0.06, 4096 / Math.max(B.w, B.h)), X0 = B.x0, Y0 = B.y0, TW = Math.ceil(B.w * S), TH = Math.ceil(B.h * S);
     const g = this.make.graphics({ x: 0, y: 0 }, false);
     const T = (pts: Pt[]) => pts.map((q) => ({ x: (q.x - X0) * S, y: (q.y - Y0) * S }));
     for (const pass of [0, 1]) for (const seg of this.net.segs) {

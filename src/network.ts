@@ -28,6 +28,10 @@ export interface Crossing { x: number; y: number; h: number; sig: Signal; corner
 export interface Goal { seg: Seg; s: number }
 export interface Route { trans: Trans[]; goal: Goal; cost: number; diverted?: boolean }
 export interface Camera { seg: Seg; s: number; x: number; y: number }
+/** an axis-aligned world rectangle */
+export interface Bounds { x0: number; y0: number; x1: number; y1: number; w: number; h: number }
+/** how far the map extent reaches past the outermost road edge: room for a station disc and its label */
+export const MAP_MARGIN = 1800;
 
 export const GREEN = 0x1d7a4c, BLUE = 0x1f5fb8, POLICE = 0x283a8f;
 
@@ -174,6 +178,22 @@ export class Network {
     const rd: Road = { name, c, f, r, fLen: len(f), rLen: len(r) };
     this.roads.push(rd);
     return rd;
+  }
+  private boundsCache: Bounds | null = null;
+  /**
+   * The map extent: every segment's geometry (with its lane width) plus MAP_MARGIN. The sat-nav texture and the sector
+   * map both use it, so no road is ever cut off at the edge. The network is static once built, so it is computed once.
+   */
+  bounds(): Bounds {
+    if (this.boundsCache) return this.boundsCache;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const seg of this.segs) {
+      const half = (seg.lanes * seg.laneW) / 2 + (seg.shoulder ? LW : 0);
+      x0 = Math.min(x0, seg.path.minX - half); x1 = Math.max(x1, seg.path.maxX + half);
+      y0 = Math.min(y0, seg.path.minY - half); y1 = Math.max(y1, seg.path.maxY + half);
+    }
+    x0 -= MAP_MARGIN; y0 -= MAP_MARGIN; x1 += MAP_MARGIN; y1 += MAP_MARGIN;
+    return (this.boundsCache = { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 });
   }
   /** (section, local s) for a distance along a chained carriageway */
   private locate(segs: Seg[], s: number): { seg: Seg; s: number } {
